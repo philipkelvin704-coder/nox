@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { connectToDeriv, getCandles, formatCandleTime } from "./deriv";
 import "./App.css";
 
-const API_BASE_URL = "http://localhost:3001";
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
 
 const BASE_MARKETS = [
   { label: "Volatility 10 Index", category: "Synthetic Indices", symbol: "R_10", provider: "deriv" },
