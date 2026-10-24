@@ -1,4 +1,3 @@
-
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Montserrat:wght@600;700&display=swap');
 
 :root {
@@ -403,6 +402,7 @@ input:focus-visible {
     opacity: 0;
     transform: translateY(-4px) scale(.99);
   }
+
   to {
     opacity: 1;
     transform: translateY(0) scale(1);
@@ -604,11 +604,15 @@ input:focus-visible {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes counterspin {
-  to { transform: rotate(-360deg); }
+  to {
+    transform: rotate(-360deg);
+  }
 }
 
 .analysis-loader h2 {
@@ -860,7 +864,7 @@ input:focus-visible {
 
 .scenario-card {
   min-width: 0;
-  border: 1px solid #282828;
+  border: none;
   border-radius: 10px;
   padding: 14px;
   background: #090909;
