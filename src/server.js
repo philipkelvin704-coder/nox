@@ -1,3 +1,4 @@
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -26,7 +27,74 @@ const TIMEFRAMES = {
 
 const COINGECKO_API = "https://api.coingecko.com/api/v3";
 
-// ------------------------------ Status ------------------------------
+// --------------------------------------------------
+// Provider response cache
+// --------------------------------------------------
+
+const providerCache = new Map();
+const providerRequestsInFlight = new Map();
+
+async function fetchJsonCached(
+  url,
+  options = {},
+  cacheDurationMs = 10 * 60 * 1000,
+  staleDurationMs = 24 * 60 * 60 * 1000
+) {
+  const cacheKey = url.toString();
+  const now = Date.now();
+  const cached = providerCache.get(cacheKey);
+
+  // Return fresh cached data without contacting the provider.
+  if (cached && now - cached.savedAt < cacheDurationMs) {
+    return cached.data;
+  }
+
+  // Reuse an identical request already in progress.
+  if (providerRequestsInFlight.has(cacheKey)) {
+    return providerRequestsInFlight.get(cacheKey);
+  }
+
+  const request = (async () => {
+    try {
+      const data = await fetchJson(url, options);
+
+      providerCache.set(cacheKey, {
+        data,
+        savedAt: Date.now(),
+      });
+
+      return data;
+    } catch (error) {
+      // Use older cached data if the provider is temporarily unavailable.
+      const latestCache = providerCache.get(cacheKey);
+
+      if (
+        latestCache &&
+        Date.now() - latestCache.savedAt <=
+          cacheDurationMs + staleDurationMs
+      ) {
+        console.warn(
+          "Using cached provider data after request failure:",
+          error.message
+        );
+
+        return latestCache.data;
+      }
+
+      throw error;
+    } finally {
+      providerRequestsInFlight.delete(cacheKey);
+    }
+  })();
+
+  providerRequestsInFlight.set(cacheKey, request);
+
+  return request;
+}
+
+// --------------------------------------------------
+// Status
+// --------------------------------------------------
 
 app.get("/api/status", (_req, res) => {
   res.json({
@@ -42,7 +110,9 @@ app.get("/api/status", (_req, res) => {
   });
 });
 
-// ------------------------------ Validation ------------------------------
+// --------------------------------------------------
+// Validation helpers
+// --------------------------------------------------
 
 function normalizeTimeframe(value) {
   const input = String(value || "15m").trim();
@@ -78,7 +148,9 @@ function normalizeSymbol(value) {
   return symbol;
 }
 
-// ------------------------------ HTTP helpers ------------------------------
+// --------------------------------------------------
+// Shared HTTP helper
+// --------------------------------------------------
 
 async function fetchJson(url, options = {}) {
   const headers = {
@@ -125,14 +197,15 @@ function coinGeckoHeaders() {
   const headers = {};
 
   if (process.env.COINGECKO_API_KEY) {
-    headers["x-cg-demo-api-key"] =
-      process.env.COINGECKO_API_KEY;
+    headers["x-cg-demo-api-key"] = process.env.COINGECKO_API_KEY;
   }
 
   return headers;
 }
 
-// ------------------------------ Twelve Data ------------------------------
+// --------------------------------------------------
+// Twelve Data
+// --------------------------------------------------
 
 function normalizeTwelveData(data) {
   if (!Array.isArray(data.values)) {
@@ -154,18 +227,12 @@ function normalizeTwelveData(data) {
       close: Number(c.close),
     }))
     .filter((c) =>
-      [c.open, c.high, c.low, c.close].every(
-        Number.isFinite
-      )
+      [c.open, c.high, c.low, c.close].every(Number.isFinite)
     )
     .reverse();
 }
 
-async function getTwelveDataCandles(
-  symbol,
-  timeframe,
-  limit
-) {
+async function getTwelveDataCandles(symbol, timeframe, limit) {
   const interval = TIMEFRAMES[timeframe].twelve;
 
   if (!interval) {
@@ -175,32 +242,22 @@ async function getTwelveDataCandles(
   }
 
   if (!process.env.TWELVE_DATA_API_KEY) {
-    throw new Error(
-      "TWELVE_DATA_API_KEY is missing from .env."
-    );
+    throw new Error("TWELVE_DATA_API_KEY is missing from .env.");
   }
 
-  const url = new URL(
-    "https://api.twelvedata.com/time_series"
-  );
+  const url = new URL("https://api.twelvedata.com/time_series");
 
-  url.searchParams.set(
-    "symbol",
-    symbol.replace("-", "/")
-  );
+  url.searchParams.set("symbol", symbol.replace("-", "/"));
   url.searchParams.set("interval", interval);
   url.searchParams.set("outputsize", String(limit));
-  url.searchParams.set(
-    "apikey",
-    process.env.TWELVE_DATA_API_KEY
-  );
+  url.searchParams.set("apikey", process.env.TWELVE_DATA_API_KEY);
 
-  return normalizeTwelveData(
-    await fetchJson(url)
-  ).slice(-limit);
+  return normalizeTwelveData(await fetchJson(url)).slice(-limit);
 }
 
-// ------------------------------ Alpha Vantage ------------------------------
+// --------------------------------------------------
+// Alpha Vantage
+// --------------------------------------------------
 
 function normalizeAlphaVantage(data) {
   const seriesKey = Object.keys(data).find((key) =>
@@ -227,21 +284,12 @@ function normalizeAlphaVantage(data) {
       close: Number(c["4. close"]),
     }))
     .filter((c) =>
-      [c.open, c.high, c.low, c.close].every(
-        Number.isFinite
-      )
+      [c.open, c.high, c.low, c.close].every(Number.isFinite)
     )
-    .sort(
-      (a, b) =>
-        Date.parse(a.time) - Date.parse(b.time)
-    );
+    .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
 }
 
-async function getAlphaVantageCandles(
-  symbol,
-  timeframe,
-  limit
-) {
+async function getAlphaVantageCandles(symbol, timeframe, limit) {
   const interval = TIMEFRAMES[timeframe].alpha;
 
   if (!interval) {
@@ -251,14 +299,10 @@ async function getAlphaVantageCandles(
   }
 
   if (!process.env.ALPHA_VANTAGE_API_KEY) {
-    throw new Error(
-      "ALPHA_VANTAGE_API_KEY is missing from .env."
-    );
+    throw new Error("ALPHA_VANTAGE_API_KEY is missing from .env.");
   }
 
-  const pair = symbol
-    .replace(/[^A-Za-z]/g, "")
-    .toUpperCase();
+  const pair = symbol.replace(/[^A-Za-z]/g, "").toUpperCase();
 
   if (!/^[A-Z]{6}$/.test(pair)) {
     throw new Error(
@@ -266,26 +310,13 @@ async function getAlphaVantageCandles(
     );
   }
 
-  const url = new URL(
-    "https://www.alphavantage.co/query"
-  );
+  const url = new URL("https://www.alphavantage.co/query");
 
-  url.searchParams.set(
-    "from_symbol",
-    pair.slice(0, 3)
-  );
-  url.searchParams.set(
-    "to_symbol",
-    pair.slice(3, 6)
-  );
-  url.searchParams.set(
-    "apikey",
-    process.env.ALPHA_VANTAGE_API_KEY
-  );
+  url.searchParams.set("from_symbol", pair.slice(0, 3));
+  url.searchParams.set("to_symbol", pair.slice(3, 6));
+  url.searchParams.set("apikey", process.env.ALPHA_VANTAGE_API_KEY);
 
-  if (
-    ["daily", "weekly", "monthly"].includes(interval)
-  ) {
+  if (["daily", "weekly", "monthly"].includes(interval)) {
     url.searchParams.set(
       "function",
       `FX_${interval.toUpperCase()}`
@@ -299,18 +330,16 @@ async function getAlphaVantageCandles(
     );
   }
 
-  return normalizeAlphaVantage(
-    await fetchJson(url)
-  ).slice(-limit);
+  return normalizeAlphaVantage(await fetchJson(url)).slice(-limit);
 }
 
-// ------------------------------ Binance ------------------------------
+// --------------------------------------------------
+// Binance
+// --------------------------------------------------
 
 function normalizeBinance(rows) {
   if (!Array.isArray(rows)) {
-    throw new Error(
-      "Binance returned an unexpected candle response."
-    );
+    throw new Error("Binance returned an unexpected candle response.");
   }
 
   return rows.map((c) => ({
@@ -322,48 +351,32 @@ function normalizeBinance(rows) {
   }));
 }
 
-async function getBinanceCandles(
-  symbol,
-  timeframe,
-  limit
-) {
-  const url = new URL(
-    "https://api.binance.com/api/v3/klines"
-  );
+async function getBinanceCandles(symbol, timeframe, limit) {
+  const url = new URL("https://api.binance.com/api/v3/klines");
 
   url.searchParams.set(
     "symbol",
     symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
   );
-
-  url.searchParams.set(
-    "interval",
-    TIMEFRAMES[timeframe].binance
-  );
-
-  url.searchParams.set(
-    "limit",
-    String(Math.min(limit, 1000))
-  );
+  url.searchParams.set("interval", TIMEFRAMES[timeframe].binance);
+  url.searchParams.set("limit", String(Math.min(limit, 1000)));
 
   const data = await fetchJson(url);
 
   if (!Array.isArray(data)) {
-    throw new Error(
-      data.msg || "Binance could not return these candles."
-    );
+    throw new Error(data.msg || "Binance could not return these candles.");
   }
 
   return normalizeBinance(data);
 }
 
-// ------------------------------ CoinGecko markets ------------------------------
+// --------------------------------------------------
+// CoinGecko market list
+// --------------------------------------------------
 
 app.get("/api/coingecko/markets", async (_req, res) => {
   try {
-    const url = new URL(
-      `${COINGECKO_API}/coins/markets`
-    );
+    const url = new URL(`${COINGECKO_API}/coins/markets`);
 
     url.searchParams.set("vs_currency", "usd");
     url.searchParams.set("order", "market_cap_desc");
@@ -371,9 +384,13 @@ app.get("/api/coingecko/markets", async (_req, res) => {
     url.searchParams.set("page", "1");
     url.searchParams.set("sparkline", "false");
 
-    const data = await fetchJson(url, {
-      headers: coinGeckoHeaders(),
-    });
+    // Cache for 10 minutes; allow older cached data for up to 24 hours.
+    const data = await fetchJsonCached(
+      url,
+      { headers: coinGeckoHeaders() },
+      10 * 60 * 1000,
+      24 * 60 * 60 * 1000
+    );
 
     if (!Array.isArray(data)) {
       throw new Error(
@@ -382,10 +399,7 @@ app.get("/api/coingecko/markets", async (_req, res) => {
     }
 
     const markets = data
-      .filter(
-        (coin) =>
-          coin?.id && coin?.name && coin?.symbol
-      )
+      .filter((coin) => coin?.id && coin?.name && coin?.symbol)
       .map((coin) => ({
         id: coin.id,
         name: coin.name,
@@ -414,13 +428,13 @@ app.get("/api/coingecko/markets", async (_req, res) => {
   }
 });
 
-// ------------------------------ CoinGecko OHLC ------------------------------
+// --------------------------------------------------
+// CoinGecko OHLC candles
+// --------------------------------------------------
 
 function normalizeCoinGeckoOHLC(rows) {
   if (!Array.isArray(rows)) {
-    throw new Error(
-      "CoinGecko returned an unexpected OHLC response."
-    );
+    throw new Error("CoinGecko returned an unexpected OHLC response.");
   }
 
   return rows
@@ -444,17 +458,12 @@ function normalizeCoinGeckoOHLC(rows) {
       (c) =>
         c &&
         Number.isFinite(Date.parse(c.time)) &&
-        [c.open, c.high, c.low, c.close].every(
-          Number.isFinite
-        )
+        [c.open, c.high, c.low, c.close].every(Number.isFinite)
     )
     .sort((a, b) => a.epoch - b.epoch);
 }
 
-function getCandleBucketStart(
-  epochSeconds,
-  timeframe
-) {
+function getCandleBucketStart(epochSeconds, timeframe) {
   const date = new Date(epochSeconds * 1000);
 
   if (timeframe === "1W") {
@@ -467,8 +476,7 @@ function getCandleBucketStart(
     );
 
     start.setUTCDate(
-      start.getUTCDate() -
-        ((start.getUTCDay() + 6) % 7)
+      start.getUTCDate() - ((start.getUTCDay() + 6) % 7)
     );
 
     return Math.floor(start.getTime() / 1000);
@@ -476,11 +484,7 @@ function getCandleBucketStart(
 
   if (timeframe === "1M") {
     return Math.floor(
-      Date.UTC(
-        date.getUTCFullYear(),
-        date.getUTCMonth(),
-        1
-      ) / 1000
+      Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1) / 1000
     );
   }
 
@@ -507,27 +511,15 @@ function getCandleBucketStart(
     );
   }
 
-  return (
-    Math.floor(epochSeconds / seconds) * seconds
-  );
+  return Math.floor(epochSeconds / seconds) * seconds;
 }
 
-function aggregateCoinGeckoCandles(
-  candles,
-  timeframe
-) {
+function aggregateCoinGeckoCandles(candles, timeframe) {
   const groups = new Map();
 
   for (const candle of candles) {
-    const bucket = getCandleBucketStart(
-      candle.epoch,
-      timeframe
-    );
-
-    const time = new Date(
-      bucket * 1000
-    ).toISOString();
-
+    const bucket = getCandleBucketStart(candle.epoch, timeframe);
+    const time = new Date(bucket * 1000).toISOString();
     const current = groups.get(bucket);
 
     if (!current) {
@@ -540,39 +532,21 @@ function aggregateCoinGeckoCandles(
         close: candle.close,
       });
     } else {
-      current.high = Math.max(
-        current.high,
-        candle.high
-      );
-
-      current.low = Math.min(
-        current.low,
-        candle.low
-      );
-
+      current.high = Math.max(current.high, candle.high);
+      current.low = Math.min(current.low, candle.low);
       current.close = candle.close;
     }
   }
 
-  return [...groups.values()].sort(
-    (a, b) => a.epoch - b.epoch
-  );
+  return [...groups.values()].sort((a, b) => a.epoch - b.epoch);
 }
 
-async function getCoinGeckoCandles(
-  coinId,
-  timeframe,
-  limit
-) {
+async function getCoinGeckoCandles(coinId, timeframe, limit) {
   if (!/^[A-Za-z0-9-]+$/.test(coinId)) {
-    throw new Error(
-      "Invalid CoinGecko coin ID."
-    );
+    throw new Error("Invalid CoinGecko coin ID.");
   }
 
-  if (
-    ["1m", "3m", "5m", "15m"].includes(timeframe)
-  ) {
+  if (["1m", "3m", "5m", "15m"].includes(timeframe)) {
     throw new Error(
       "CoinGecko's OHLC endpoint does not provide dependable candles at this small timeframe. Select 30m or higher for crypto."
     );
@@ -580,9 +554,7 @@ async function getCoinGeckoCandles(
 
   let days;
 
-  if (
-    ["30m", "1h", "2h", "4h"].includes(timeframe)
-  ) {
+  if (["30m", "1h", "2h", "4h"].includes(timeframe)) {
     days = "1";
   } else if (timeframe === "1D") {
     days = "30";
@@ -597,17 +569,19 @@ async function getCoinGeckoCandles(
   }
 
   const url = new URL(
-    `${COINGECKO_API}/coins/${encodeURIComponent(
-      coinId
-    )}/ohlc`
+    `${COINGECKO_API}/coins/${encodeURIComponent(coinId)}/ohlc`
   );
 
   url.searchParams.set("vs_currency", "usd");
   url.searchParams.set("days", days);
 
-  const raw = await fetchJson(url, {
-    headers: coinGeckoHeaders(),
-  });
+  // Cache candles for 5 minutes; allow older cached data for up to 24 hours.
+  const raw = await fetchJsonCached(
+    url,
+    { headers: coinGeckoHeaders() },
+    5 * 60 * 1000,
+    24 * 60 * 60 * 1000
+  );
 
   let candles = normalizeCoinGeckoOHLC(raw);
 
@@ -618,10 +592,7 @@ async function getCoinGeckoCandles(
   }
 
   if (timeframe !== "30m") {
-    candles = aggregateCoinGeckoCandles(
-      candles,
-      timeframe
-    );
+    candles = aggregateCoinGeckoCandles(candles, timeframe);
   }
 
   candles = candles.slice(-limit);
@@ -635,63 +606,32 @@ async function getCoinGeckoCandles(
   return candles;
 }
 
-// ------------------------------ Shared candle endpoint ------------------------------
+// --------------------------------------------------
+// Shared candle endpoint
+// --------------------------------------------------
 
 app.get("/api/candles", async (req, res) => {
   try {
-    const provider = String(
-      req.query.provider || ""
-    ).toLowerCase();
+    const provider = String(req.query.provider || "").toLowerCase();
+    const symbol = normalizeSymbol(req.query.symbol);
+    const timeframe = normalizeTimeframe(req.query.timeframe || "15m");
 
-    const symbol = normalizeSymbol(
-      req.query.symbol
-    );
-
-    const timeframe = normalizeTimeframe(
-      req.query.timeframe || "15m"
-    );
-
-    const parsedLimit = Number.parseInt(
-      req.query.limit || "100",
-      10
-    );
-
+    const parsedLimit = Number.parseInt(req.query.limit || "100", 10);
     const limit = Math.min(
       500,
-      Math.max(
-        20,
-        Number.isFinite(parsedLimit)
-          ? parsedLimit
-          : 100
-      )
+      Math.max(20, Number.isFinite(parsedLimit) ? parsedLimit : 100)
     );
 
     let candles;
 
     if (provider === "twelvedata") {
-      candles = await getTwelveDataCandles(
-        symbol,
-        timeframe,
-        limit
-      );
+      candles = await getTwelveDataCandles(symbol, timeframe, limit);
     } else if (provider === "alphavantage") {
-      candles = await getAlphaVantageCandles(
-        symbol,
-        timeframe,
-        limit
-      );
+      candles = await getAlphaVantageCandles(symbol, timeframe, limit);
     } else if (provider === "binance") {
-      candles = await getBinanceCandles(
-        symbol,
-        timeframe,
-        limit
-      );
+      candles = await getBinanceCandles(symbol, timeframe, limit);
     } else if (provider === "coingecko") {
-      candles = await getCoinGeckoCandles(
-        symbol,
-        timeframe,
-        limit
-      );
+      candles = await getCoinGeckoCandles(symbol, timeframe, limit);
     } else {
       return res.status(400).json({
         error:
@@ -701,8 +641,7 @@ app.get("/api/candles", async (req, res) => {
 
     if (!candles.length) {
       return res.status(502).json({
-        error:
-          "The provider returned no valid candles.",
+        error: "The provider returned no valid candles.",
       });
     }
 
@@ -714,31 +653,26 @@ app.get("/api/candles", async (req, res) => {
       candles,
     });
   } catch (error) {
-    console.error(
-      "Candle request failed:",
-      error.message
-    );
+    console.error("Candle request failed:", error.message);
 
     res.status(502).json({
-      error:
-        error.message ||
-        "Unable to load candles.",
+      error: error.message || "Unable to load candles.",
     });
   }
 });
 
-// ------------------------------ Unknown API routes ------------------------------
+// --------------------------------------------------
+// Unknown API routes
+// --------------------------------------------------
 
-app.use("/api", (_req, res) =>
-  res.status(404).json({
-    error: "API route not found.",
-  })
-);
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "API route not found." });
+});
 
-// ------------------------------ Start server ------------------------------
+// --------------------------------------------------
+// Start server
+// --------------------------------------------------
 
 app.listen(PORT, () => {
-  console.log(
-    `NOX TRADE backend running at http://localhost:${PORT}`
-  );
+  console.log(`NOX TRADE backend running at http://localhost:${PORT}`);
 });
