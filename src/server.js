@@ -1,3 +1,4 @@
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -9,6 +10,8 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: true }));
 app.use(express.json());
+
+const BINANCE_BASE_URL = "https://data-api.binance.vision";
 
 const TIMEFRAMES = {
   "1m": { twelve: "1min", alpha: "1min", binance: "1m" },
@@ -24,6 +27,8 @@ const TIMEFRAMES = {
   "1M": { twelve: "1month", alpha: "monthly", binance: "1M" },
 };
 
+// ------------------------------ API status ------------------------------
+
 app.get("/api/status", (_req, res) => {
   res.json({
     app: "NOX TRADE",
@@ -37,6 +42,8 @@ app.get("/api/status", (_req, res) => {
     },
   });
 });
+
+// ------------------------------ Helpers ------------------------------
 
 function normalizeTimeframe(value) {
   const input = String(value || "15m").trim();
@@ -78,7 +85,11 @@ async function fetchJson(url, options = {}) {
     ...(options.headers || {}),
   };
 
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, {
+    ...options,
+    headers,
+  });
+
   const raw = await response.text();
 
   let data;
@@ -122,7 +133,9 @@ function normalizeTwelveData(data) {
 
   return data.values
     .map((c) => ({
-      time: new Date(c.datetime.replace(" ", "T") + "Z").toISOString(),
+      time: new Date(
+        c.datetime.replace(" ", "T") + "Z"
+      ).toISOString(),
       open: Number(c.open),
       high: Number(c.high),
       low: Number(c.low),
@@ -217,7 +230,10 @@ async function getAlphaVantageCandles(symbol, timeframe, limit) {
   url.searchParams.set("apikey", process.env.ALPHA_VANTAGE_API_KEY);
 
   if (["daily", "weekly", "monthly"].includes(interval)) {
-    url.searchParams.set("function", `FX_${interval.toUpperCase()}`);
+    url.searchParams.set(
+      "function",
+      `FX_${interval.toUpperCase()}`
+    );
   } else {
     url.searchParams.set("function", "FX_INTRADAY");
     url.searchParams.set("interval", interval);
@@ -237,48 +253,61 @@ function normalizeBinance(rows) {
     throw new Error("Binance returned an unexpected candle response.");
   }
 
-  return rows.map((c) => ({
-    time: new Date(Number(c[0])).toISOString(),
-    open: Number(c[1]),
-    high: Number(c[2]),
-    low: Number(c[3]),
-    close: Number(c[4]),
-  }));
+  return rows
+    .map((c) => ({
+      time: new Date(Number(c[0])).toISOString(),
+      open: Number(c[1]),
+      high: Number(c[2]),
+      low: Number(c[3]),
+      close: Number(c[4]),
+    }))
+    .filter((c) =>
+      [c.open, c.high, c.low, c.close].every(Number.isFinite)
+    );
 }
 
 async function getBinanceCandles(symbol, timeframe, limit) {
-  const url = new URL("https://api.binance.com/api/v3/klines");
+  const url = new URL(`${BINANCE_BASE_URL}/api/v3/klines`);
 
   url.searchParams.set(
     "symbol",
     symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
   );
-  url.searchParams.set("interval", TIMEFRAMES[timeframe].binance);
+
+  url.searchParams.set(
+    "interval",
+    TIMEFRAMES[timeframe].binance
+  );
+
   url.searchParams.set("limit", String(Math.min(limit, 1000)));
 
   const data = await fetchJson(url);
 
   if (!Array.isArray(data)) {
-    throw new Error(data.msg || "Binance could not return these candles.");
+    throw new Error(
+      data.msg || "Binance could not return these candles."
+    );
   }
 
   return normalizeBinance(data);
 }
 
-// ------------------------------ Binance crypto markets ------------------------------
+// ------------------------------ Binance markets ------------------------------
 
 app.get("/api/binance/markets", async (_req, res) => {
   try {
     const [exchangeInfo, tickerData] = await Promise.all([
-      fetchJson("https://api.binance.com/api/v3/exchangeInfo"),
-      fetchJson("https://api.binance.com/api/v3/ticker/24hr"),
+      fetchJson(`${BINANCE_BASE_URL}/api/v3/exchangeInfo`),
+      fetchJson(`${BINANCE_BASE_URL}/api/v3/ticker/24hr`),
     ]);
 
     if (
       !Array.isArray(exchangeInfo.symbols) ||
       !Array.isArray(tickerData)
     ) {
-      throw new Error("Binance returned an unexpected market-list format.");
+      throw new Error(
+        "Binance returned an unexpected market-list format."
+      );
     }
 
     const prices = new Map(
@@ -322,11 +351,15 @@ app.get("/api/binance/markets", async (_req, res) => {
       markets,
     });
   } catch (error) {
-    console.error("Binance market-list request failed:", error.message);
+    console.error(
+      "Binance market-list request failed:",
+      error.message
+    );
 
     res.status(502).json({
       error:
-        error.message || "Unable to retrieve Binance crypto markets.",
+        error.message ||
+        "Unable to retrieve Binance crypto markets.",
       markets: [],
     });
   }
@@ -341,22 +374,39 @@ app.get("/api/candles", async (req, res) => {
     const timeframe = normalizeTimeframe(req.query.timeframe || "15m");
 
     const parsedLimit = Number.parseInt(req.query.limit || "100", 10);
+
     const limit = Math.min(
       500,
-      Math.max(20, Number.isFinite(parsedLimit) ? parsedLimit : 100)
+      Math.max(
+        20,
+        Number.isFinite(parsedLimit) ? parsedLimit : 100
+      )
     );
 
     let candles;
 
     if (provider === "twelvedata") {
-      candles = await getTwelveDataCandles(symbol, timeframe, limit);
+      candles = await getTwelveDataCandles(
+        symbol,
+        timeframe,
+        limit
+      );
     } else if (provider === "alphavantage") {
-      candles = await getAlphaVantageCandles(symbol, timeframe, limit);
+      candles = await getAlphaVantageCandles(
+        symbol,
+        timeframe,
+        limit
+      );
     } else if (provider === "binance") {
-      candles = await getBinanceCandles(symbol, timeframe, limit);
+      candles = await getBinanceCandles(
+        symbol,
+        timeframe,
+        limit
+      );
     } else {
       return res.status(400).json({
-        error: "Unknown provider. Use twelvedata, alphavantage or binance.",
+        error:
+          "Unknown provider. Use twelvedata, alphavantage or binance.",
       });
     }
 
@@ -382,11 +432,14 @@ app.get("/api/candles", async (req, res) => {
   }
 });
 
-// Return JSON for unknown API routes.
+// ------------------------------ Unknown API routes ------------------------------
+
 app.use("/api", (_req, res) =>
   res.status(404).json({ error: "API route not found." })
 );
 
-app.listen(PORT, () =>
-  console.log(`NOX TRADE backend running at http://localhost:${PORT}`)
-);
+// ------------------------------ Start server ------------------------------
+
+app.listen(PORT, () => {
+  console.log(`NOX TRADE backend running at http://localhost:${PORT}`);
+});
