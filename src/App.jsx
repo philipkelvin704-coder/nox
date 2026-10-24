@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectToDeriv, getCandles, formatCandleTime } from "./deriv";
 import "./App.css";
@@ -38,7 +37,7 @@ const TIMEFRAMES = [
   { label: "1 month", value: 2592000, apiValue: "1M" },
 ];
 
-const isCrypto = (market) => market?.provider === "coingecko";
+const isCrypto = (market) => market?.provider === "binance";
 
 const fmt = (value) =>
   Number.isFinite(Number(value))
@@ -124,11 +123,7 @@ function normalizeCandle(candle, index = 0) {
 }
 
 /*
- * Find candidate retracement zones from the candles:
- * - Swing highs/lows: possible resistance/support.
- * - Bullish candles before a strong bearish move: possible supply/order block.
- * - Bearish candles before a strong bullish move: possible demand/order block.
- *
+ * Find possible swing support, swing resistance, supply and demand areas.
  * These are heuristic candidates, not verified institutional order blocks.
  */
 function findRetracementZones(candles, avgBody, pad) {
@@ -184,7 +179,6 @@ function findRetracementZones(candles, avgBody, pad) {
       });
     }
 
-    // A bullish candle followed by a strong bearish displacement.
     const bearishDisplacement =
       after.close < after.open &&
       before.close < before.open &&
@@ -200,7 +194,6 @@ function findRetracementZones(candles, avgBody, pad) {
       });
     }
 
-    // A bearish candle followed by a strong bullish displacement.
     const bullishDisplacement =
       after.close > after.open &&
       before.close > before.open &&
@@ -217,7 +210,6 @@ function findRetracementZones(candles, avgBody, pad) {
     }
   }
 
-  // Give recent zones priority while avoiding zones that are too wide.
   return zones
     .map((zone) => ({
       ...zone,
@@ -255,7 +247,6 @@ function selectRetracementZone(zones, direction, currentPrice, pad) {
 
   scored.sort((a, b) => a.score - b.score);
 
-  // Prefer the closest relevant zone price could retrace into.
   return scored[0];
 }
 
@@ -267,18 +258,21 @@ function analyzeCandles(rawCandles) {
     );
 
   if (candles.length < 5) {
-    throw new Error("At least five valid candles are needed to analyze this market.");
+    throw new Error(
+      "At least five valid candles are needed to analyze this market."
+    );
   }
 
   const recent = candles.slice(-20);
   const last = candles.at(-1);
   const previous = candles.at(-2);
 
-  const recentHigh = Math.max(...recent.map((c) => c.high));
-  const recentLow = Math.min(...recent.map((c) => c.low));
+  // The structural stop levels are based on these recent swing extremes.
+  const swingHigh = Math.max(...recent.map((c) => c.high));
+  const swingLow = Math.min(...recent.map((c) => c.low));
 
   const range = Math.max(
-    recentHigh - recentLow,
+    swingHigh - swingLow,
     Math.abs(last.close) * 0.000001
   );
 
@@ -298,7 +292,7 @@ function analyzeCandles(rawCandles) {
     Math.max(candleBodies.length, 1);
 
   const isConsolidating =
-    (recentHigh - recentLow) / Math.max(Math.abs(last.close), 1e-9) <
+    (swingHigh - swingLow) / Math.max(Math.abs(last.close), 1e-9) <
       0.012 &&
     trendPercent < 0.008;
 
@@ -326,46 +320,42 @@ function analyzeCandles(rawCandles) {
   );
 
   const targetDistance = Math.max(range * 0.45, pad * 1.5);
-
   const zones = findRetracementZones(candles, avgBody, pad);
 
   if (isConsolidating) {
-    const buyEntry = level(recentHigh);
-    const sellEntry = level(recentLow);
-
     return {
       action: "WAIT",
       setupType: "Breakout and retest",
       marketCondition: "Consolidation",
-      recentHigh: level(recentHigh),
-      recentLow: level(recentLow),
-      rangeHigh: level(recentHigh),
-      rangeLow: level(recentLow),
+      recentHigh: level(swingHigh),
+      recentLow: level(swingLow),
+      rangeHigh: level(swingHigh),
+      rangeLow: level(swingLow),
       paragraphs: [
-        `Price has been moving sideways between ${fmt(level(recentLow))} and ${fmt(level(recentHigh))}. Neither side has clearly taken control, so entering in the middle of this range would mean guessing.`,
+        `Price has been moving sideways between ${fmt(level(swingLow))} and ${fmt(level(swingHigh))}. Neither side has clearly taken control, so entering in the middle of this range would mean guessing.`,
         "Wait for a candle to close outside the range, then see whether price returns to test that boundary and holds. A breakout that immediately falls back into the range is not confirmation.",
       ],
       waitFor:
         "Wait for a candle close outside the range, then a retest that holds. A bullish candle after an upper retest supports a buy idea; a bearish candle after a lower retest supports a sell idea.",
       buy: {
-        entry: buyEntry,
-        watchLow: level(recentHigh - pad * 0.25),
-        watchHigh: level(recentHigh + pad * 0.25),
+        entry: level(swingHigh),
+        watchLow: level(swingHigh - pad * 0.25),
+        watchHigh: level(swingHigh + pad * 0.25),
         zoneType: "Range resistance / breakout retest",
-        stopLoss: level(recentHigh - pad),
-        takeProfit: level(recentHigh + targetDistance),
+        stopLoss: level(swingLow),
+        takeProfit: level(swingHigh + targetDistance),
         confirmation:
           "A candle closes above the range, price retests the upper boundary, then a bullish candle closes back above it.",
         invalidation:
           "Price falls back into the range and holds there. Cancel the buy idea and wait for the range to resolve again.",
       },
       sell: {
-        entry: sellEntry,
-        watchLow: level(recentLow - pad * 0.25),
-        watchHigh: level(recentLow + pad * 0.25),
+        entry: level(swingLow),
+        watchLow: level(swingLow - pad * 0.25),
+        watchHigh: level(swingLow + pad * 0.25),
         zoneType: "Range support / breakdown retest",
-        stopLoss: level(recentLow + pad),
-        takeProfit: level(recentLow - targetDistance),
+        stopLoss: level(swingHigh),
+        takeProfit: level(swingLow - targetDistance),
         confirmation:
           "A candle closes below the range, price retests the lower boundary, then a bearish candle closes back below it.",
         invalidation:
@@ -381,38 +371,38 @@ function analyzeCandles(rawCandles) {
   if (bullish) {
     const selectedZone = selectRetracementZone(
       zones.filter((zone) =>
-        ["Support", "Demand / bullish order-block candidate"].includes(zone.type)
+        ["Support", "Demand / bullish order-block candidate"].includes(
+          zone.type
+        )
       ),
       "BUY",
       last.close,
       pad
     );
 
-    const fallbackLow = Math.min(recentLow, last.low);
     const watchLow = selectedZone
       ? level(selectedZone.low)
-      : level(Math.max(fallbackLow, last.close - pad));
+      : level(Math.max(swingLow, last.close - pad));
 
     const watchHigh = selectedZone
       ? level(selectedZone.high)
       : level(Math.max(watchLow + pad * 0.25, last.close - pad * 0.25));
 
     const entry = level((watchLow + watchHigh) / 2);
-    const stop = level(Math.min(fallbackLow, watchLow) - pad * 0.15);
-    const tp = level(Math.max(recentHigh, entry + targetDistance));
-
+    const stop = level(swingLow);
+    const tp = level(Math.max(swingHigh, entry + targetDistance));
     const zoneType = selectedZone?.type || "Estimated support area";
 
     return {
       action: "BUY",
       setupType: "Bullish continuation · wait for pullback",
       marketCondition: "Bullish trend",
-      recentHigh: level(recentHigh),
-      recentLow: level(recentLow),
-      rangeHigh: level(recentHigh),
-      rangeLow: level(recentLow),
+      recentHigh: level(swingHigh),
+      recentLow: level(swingLow),
+      rangeHigh: level(swingHigh),
+      rangeLow: level(swingLow),
       paragraphs: [
-        `Recent candles show buyers pushing price upward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(recentHigh))} and ${fmt(level(recentLow))}.`,
+        `Recent candles show buyers pushing price upward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(swingHigh))} and ${fmt(level(swingLow))}.`,
         `The bullish idea remains conditional. The potential retracement area is ${fmt(watchLow)} to ${fmt(watchHigh)}, based on ${zoneType.toLowerCase()}. Wait for price to return to this area and show bullish rejection; do not chase the current price.`,
       ],
       waitFor:
@@ -427,11 +417,11 @@ function analyzeCandles(rawCandles) {
         confirmation:
           "Price retraces into the marked support, demand, or order-block area, holds, and a bullish candle closes upward.",
         invalidation:
-          "Price breaks below the selected retracement zone and the recent swing low, then fails to reclaim the area. Cancel the buy idea.",
+          "Price breaks below the selected retracement zone and recent swing low, then fails to reclaim the area. Cancel the buy idea.",
       },
       sell: null,
       invalidates:
-        "A decisive move below the selected retracement zone and recent swing low weakens or invalidates the bullish structure.",
+        "A decisive move below the recent swing low weakens or invalidates the bullish structure.",
       next:
         "Wait for price to revisit the marked area and confirm bullish rejection. The zone is an area to assess, not an instruction to enter automatically.",
     };
@@ -440,38 +430,38 @@ function analyzeCandles(rawCandles) {
   if (bearish) {
     const selectedZone = selectRetracementZone(
       zones.filter((zone) =>
-        ["Resistance", "Supply / bearish order-block candidate"].includes(zone.type)
+        ["Resistance", "Supply / bearish order-block candidate"].includes(
+          zone.type
+        )
       ),
       "SELL",
       last.close,
       pad
     );
 
-    const fallbackHigh = Math.max(recentHigh, last.high);
     const watchLow = selectedZone
       ? level(selectedZone.low)
-      : level(Math.min(fallbackHigh, last.close + pad * 0.25));
+      : level(Math.min(swingHigh, last.close + pad * 0.25));
 
     const watchHigh = selectedZone
       ? level(selectedZone.high)
       : level(Math.max(watchLow + pad * 0.25, last.close + pad));
 
     const entry = level((watchLow + watchHigh) / 2);
-    const stop = level(Math.max(fallbackHigh, watchHigh) + pad * 0.15);
-    const tp = level(Math.min(recentLow, entry - targetDistance));
-
+    const stop = level(swingHigh);
+    const tp = level(Math.min(swingLow, entry - targetDistance));
     const zoneType = selectedZone?.type || "Estimated resistance area";
 
     return {
       action: "SELL",
       setupType: "Bearish continuation · wait for pullback",
       marketCondition: "Bearish trend",
-      recentHigh: level(recentHigh),
-      recentLow: level(recentLow),
-      rangeHigh: level(recentHigh),
-      rangeLow: level(recentLow),
+      recentHigh: level(swingHigh),
+      recentLow: level(swingLow),
+      rangeHigh: level(swingHigh),
+      rangeLow: level(swingLow),
       paragraphs: [
-        `Recent candles show sellers pushing price downward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(recentHigh))} and ${fmt(level(recentLow))}.`,
+        `Recent candles show sellers pushing price downward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(swingHigh))} and ${fmt(level(swingLow))}.`,
         `The bearish idea remains conditional. The potential retracement area is ${fmt(watchLow)} to ${fmt(watchHigh)}, based on ${zoneType.toLowerCase()}. Wait for price to return to this area and show bearish rejection; do not sell simply because price has already fallen.`,
       ],
       waitFor:
@@ -487,10 +477,10 @@ function analyzeCandles(rawCandles) {
         confirmation:
           "Price retraces into the marked resistance, supply, or order-block area, fails to break through, and a bearish candle closes downward.",
         invalidation:
-          "Price breaks above the selected retracement zone and the recent swing high, then holds above it. Cancel the sell idea.",
+          "Price breaks above the selected retracement zone and recent swing high, then holds above it. Cancel the sell idea.",
       },
       invalidates:
-        "A decisive move above the selected retracement zone and recent swing high weakens or invalidates the bearish structure.",
+        "A decisive move above the recent swing high weakens or invalidates the bearish structure.",
       next:
         "Wait for price to revisit the marked area and confirm bearish rejection. The zone is an area to assess, not an instruction to enter automatically.",
     };
@@ -500,35 +490,35 @@ function analyzeCandles(rawCandles) {
     action: "WAIT",
     setupType: "Wait for structure to clarify",
     marketCondition: "Mixed / unclear",
-    recentHigh: level(recentHigh),
-    recentLow: level(recentLow),
-    rangeHigh: level(recentHigh),
-    rangeLow: level(recentLow),
+    recentHigh: level(swingHigh),
+    recentLow: level(swingLow),
+    rangeHigh: level(swingHigh),
+    rangeLow: level(swingLow),
     paragraphs: [
-      `Price has not shown a clear directional advantage in the latest candles. The recent high is ${fmt(level(recentHigh))} and the recent low is ${fmt(level(recentLow))}.`,
+      `Price has not shown a clear directional advantage in the latest candles. The recent high is ${fmt(level(swingHigh))} and the recent low is ${fmt(level(swingLow))}.`,
       "Wait for a clear close beyond one of these levels and then look for follow-through or a retest. Until then, the next direction is uncertain and an entry would be premature.",
     ],
     waitFor:
       "Wait for a candle close above the recent high or below the recent low, then look for a retest and a confirming candle in that direction.",
     buy: {
-      entry: level(recentHigh),
-      watchLow: level(recentHigh - pad * 0.25),
-      watchHigh: level(recentHigh + pad * 0.25),
+      entry: level(swingHigh),
+      watchLow: level(swingHigh - pad * 0.25),
+      watchHigh: level(swingHigh + pad * 0.25),
       zoneType: "Range resistance / breakout retest",
-      stopLoss: level(recentHigh - pad),
-      takeProfit: level(recentHigh + targetDistance),
+      stopLoss: level(swingLow),
+      takeProfit: level(swingHigh + targetDistance),
       confirmation:
         "A candle closes above the recent high and a retest holds with a bullish close.",
       invalidation:
         "Price returns below the broken level and holds there.",
     },
     sell: {
-      entry: level(recentLow),
-      watchLow: level(recentLow - pad * 0.25),
-      watchHigh: level(recentLow + pad * 0.25),
+      entry: level(swingLow),
+      watchLow: level(swingLow - pad * 0.25),
+      watchHigh: level(swingLow + pad * 0.25),
       zoneType: "Range support / breakdown retest",
-      stopLoss: level(recentLow + pad),
-      takeProfit: level(recentLow - targetDistance),
+      stopLoss: level(swingHigh),
+      takeProfit: level(swingLow - targetDistance),
       confirmation:
         "A candle closes below the recent low and a retest holds with a bearish close.",
       invalidation:
@@ -689,7 +679,6 @@ function TimeframeDropdown({ value, options, onChange }) {
         onClick={() => setOpen((current) => !current)}
       >
         <span className="timeframe-trigger-label">{selected.label}</span>
-
         <svg
           className="timeframe-chevron"
           viewBox="0 0 20 20"
@@ -776,9 +765,7 @@ function ScenarioCard({ side, scenario }) {
       </div>
 
       <div className="scenario-watch">
-        <p>
-          WATCH RETRACEMENT ZONE
-        </p>
+        <p>WATCH RETRACEMENT ZONE</p>
         <div className="scenario-watch-prices">
           <CopyPrice value={watchLow} />
           {hasRange && (
@@ -832,7 +819,8 @@ export default function App() {
 
     async function loadCryptoMarkets() {
       try {
-        const response = await fetch(`${API_BASE_URL}/api/coingecko/markets`);
+        const endpoint = `${API_BASE_URL}/api/binance/markets`;
+        const response = await fetch(endpoint);
         const contentType = response.headers.get("content-type") || "";
 
         if (!contentType.toLowerCase().includes("application/json")) {
@@ -841,27 +829,27 @@ export default function App() {
             .slice(0, 100);
 
           throw new Error(
-            `Expected JSON from ${API_BASE_URL}/api/coingecko/markets but received HTML or another content type. Stop duplicate servers, restart server.js on port 3001, and try again. Response: ${bodyPreview}`
+            `Expected JSON from ${endpoint} but received HTML or another content type. Check your backend URL and deployment. Response: ${bodyPreview}`
           );
         }
 
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || "CoinGecko market list request failed.");
+          throw new Error(data.error || "Binance market list request failed.");
         }
 
         if (!Array.isArray(data.markets)) {
           throw new Error(
-            data.error || "CoinGecko response did not contain a markets array."
+            data.error || "Binance response did not contain a markets array."
           );
         }
 
         const markets = data.markets.map((coin) => ({
           label: `${coin.name} (${String(coin.symbol || "").toUpperCase()})`,
-          category: "Crypto · CoinGecko spot data",
+          category: "Crypto · Binance spot data",
           symbol: coin.id,
-          provider: "coingecko",
+          provider: "binance",
           baseAsset: coin.symbol,
           currentPrice: coin.currentPrice,
           marketCapRank: coin.marketCapRank,
@@ -876,7 +864,7 @@ export default function App() {
           setCryptoStatus(
             `Crypto list unavailable: ${err?.message || "unknown error"}`
           );
-          console.error("CoinGecko market list unavailable:", err);
+          console.error("Binance market list unavailable:", err);
         }
       }
     }
@@ -958,7 +946,7 @@ export default function App() {
 
         if (!contentType.includes("application/json")) {
           throw new Error(
-            "Backend returned non-JSON candle data. Confirm server.js is running on port 3001."
+            "Backend returned non-JSON candle data. Confirm server.js is running and the backend URL is correct."
           );
         }
 
@@ -966,7 +954,8 @@ export default function App() {
 
         if (!response.ok) {
           throw new Error(
-            result.error || "Could not retrieve Binance crypto candles."
+            result.error ||
+              "Could not retrieve Binance crypto candles. This crypto may not have a Binance USDT spot pair."
           );
         }
 
@@ -1138,7 +1127,8 @@ export default function App() {
         <p className="connection-status">
           <span
             className={
-              connection.includes("Data received") || connection.includes("Connected")
+              connection.includes("Data received") ||
+              connection.includes("Connected")
                 ? "status-dot"
                 : "status-dot muted"
             }
@@ -1224,7 +1214,9 @@ export default function App() {
               <div className="scenario-grid scenario-grid-single">
                 <ScenarioCard
                   side={analysis.action}
-                  scenario={analysis.action === "BUY" ? analysis.buy : analysis.sell}
+                  scenario={
+                    analysis.action === "BUY" ? analysis.buy : analysis.sell
+                  }
                 />
               </div>
             )}
@@ -1250,11 +1242,12 @@ export default function App() {
           </div>
 
           <p className="method-note">
-            Recent high/low use the highest high and lowest low among the latest
-            20 returned candles. Retracement zones are heuristic estimates
-            based on recent candle structure, not verified institutional order
-            blocks. Entry, stop and target levels are not guaranteed outcomes.
-            Confirm the setup on the chart before considering any trade.
+            Recent swing high/low use the highest high and lowest low among the
+            latest 20 returned candles. Stop-loss levels are set at these
+            structural extremes. Retracement zones are heuristic estimates,
+            not verified institutional order blocks. Entry, stop and target
+            levels are not guaranteed outcomes. Confirm the setup and risk on
+            the chart before considering any trade.
           </p>
         </section>
       )}
