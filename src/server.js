@@ -25,6 +25,8 @@ const TIMEFRAMES = {
   "1M": { twelve: "1month", alpha: "monthly", binance: "1M" },
 };
 
+const BINANCE_BASE_URL = "https://data-api.binance.vision";
+
 app.get("/api/status", (_req, res) => {
   res.json({
     app: "NOX TRADE",
@@ -266,7 +268,7 @@ async function getBinanceCandles(symbol, timeframe, limit) {
     throw new Error("A Binance trading symbol is required, e.g. BTCUSDT.");
   }
 
-  const url = new URL("https://api.binance.com/api/v3/klines");
+  const url = new URL(`${BINANCE_BASE_URL}/api/v3/klines`);
   url.searchParams.set("symbol", cleanSymbol);
   url.searchParams.set("interval", interval);
   url.searchParams.set("limit", String(Math.min(limit, 1000)));
@@ -287,10 +289,10 @@ async function getBinanceCandles(symbol, timeframe, limit) {
 app.get("/api/binance/markets", async (_req, res) => {
   try {
     const [exchangeInfo, tickerData] = await Promise.all([
-      fetchJson("https://api.binance.com/api/v3/exchangeInfo", {
+      fetchJson(`${BINANCE_BASE_URL}/api/v3/exchangeInfo`, {
         signal: AbortSignal.timeout(20000),
       }),
-      fetchJson("https://api.binance.com/api/v3/ticker/24hr", {
+      fetchJson(`${BINANCE_BASE_URL}/api/v3/ticker/24hr`, {
         signal: AbortSignal.timeout(20000),
       }),
     ]);
