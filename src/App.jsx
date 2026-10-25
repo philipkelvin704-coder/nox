@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectToDeriv, getCandles, formatCandleTime } from "./deriv";
 import "./App.css";
+import NewsWorkspace from "./News";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
@@ -531,6 +532,45 @@ function analyzeCandles(rawCandles) {
   };
 }
 
+
+/*
+ * If a proposed target is closer to entry than the stop is, move the target
+ * so the potential reward is at least 1.5 times the stop distance.
+ * This adjusts only the suggested levels; it does not guarantee the outcome.
+ */
+function enforceMinimumRewardRisk(analysis) {
+  if (!analysis) return analysis;
+
+  const adjusted = { ...analysis };
+
+  ["buy", "sell"].forEach((side) => {
+    const scenario = adjusted[side];
+    if (!scenario) return;
+
+    const entry = Number(scenario.entry);
+    const stopLoss = Number(scenario.stopLoss);
+    const takeProfit = Number(scenario.takeProfit);
+
+    if (![entry, stopLoss, takeProfit].every(Number.isFinite)) return;
+
+    const risk = Math.abs(entry - stopLoss);
+    const reward = Math.abs(takeProfit - entry);
+
+    if (risk > 0 && risk > reward) {
+      const direction = side === "buy" ? 1 : -1;
+      const precision =
+        Math.abs(entry) < 10 ? 5 : Math.abs(entry) < 1000 ? 3 : 2;
+
+      adjusted[side] = {
+        ...scenario,
+        takeProfit: Number((entry + direction * risk * 1.5).toFixed(precision)),
+      };
+    }
+  });
+
+  return adjusted;
+}
+
 function CandleChart({ candles }) {
   const visible = candles.slice(-70);
 
@@ -802,6 +842,7 @@ function ScenarioCard({ side, scenario }) {
 }
 
 export default function App() {
+  const [mode, setMode] = useState("technical");
   const [market, setMarket] = useState(null);
   const [search, setSearch] = useState("");
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -845,15 +886,29 @@ export default function App() {
           );
         }
 
-        const markets = data.markets.map((coin) => ({
-          label: `${coin.name} (${String(coin.symbol || "").toUpperCase()})`,
-          category: "Crypto · Binance spot data",
-          symbol: coin.id,
-          provider: "binance",
-          baseAsset: coin.symbol,
-          currentPrice: coin.currentPrice,
-          marketCapRank: coin.marketCapRank,
-        }));
+        const markets = data.markets.map((coin) => {
+          const exchangeSymbol = String(
+            coin.exchangeSymbol || coin.id || coin.symbol || ""
+          ).toUpperCase();
+          const rawBaseAsset = String(
+            coin.baseAsset || coin.symbol || exchangeSymbol
+          ).toUpperCase();
+          const baseAsset = rawBaseAsset.endsWith("USDT")
+            ? rawBaseAsset.slice(0, -4)
+            : rawBaseAsset;
+          const displayName = coin.name || baseAsset;
+
+          return {
+            label: `${displayName} (${baseAsset})`,
+            category: "Crypto · Binance spot data",
+            symbol: exchangeSymbol,
+            provider: "binance",
+            baseAsset,
+            exchangeSymbol,
+            currentPrice: coin.currentPrice,
+            marketCapRank: coin.marketCapRank,
+          };
+        });
 
         if (!cancelled) {
           setCryptoMarkets(markets);
@@ -932,7 +987,10 @@ export default function App() {
 
         const params = new URLSearchParams({
           provider: "binance",
-          symbol: `${String(market.baseAsset || "").toUpperCase()}USDT`,
+          symbol: String(
+            market.exchangeSymbol ||
+              `${String(market.baseAsset || "").toUpperCase()}USDT`
+          ).toUpperCase(),
           timeframe:
             TIMEFRAMES.find((tf) => tf.value === timeframe)?.apiValue || "15m",
           limit: "120",
@@ -986,7 +1044,7 @@ export default function App() {
       }
 
       setCandles(data);
-      setAnalysis(analyzeCandles(data));
+      setAnalysis(enforceMinimumRewardRisk(analyzeCandles(data)));
 
       setConnection(
         isCrypto(market)
@@ -1022,6 +1080,63 @@ export default function App() {
         <p className="eyebrow">MARKET INTELLIGENCE · RESEARCH MODE</p>
       </header>
 
+      <nav
+        aria-label="Analysis mode"
+        style={{
+          display: "flex",
+          gap: "10px",
+          justifyContent: "center",
+          margin: "0 auto 28px",
+          width: "min(100% - 32px, 720px)",
+          padding: "6px",
+          border: "1px solid rgba(255,255,255,0.09)",
+          borderRadius: "14px",
+          background: "rgba(255,255,255,0.025)",
+        }}
+      >
+        {[
+          { id: "technical", label: "Technical", detail: "Price action" },
+          { id: "news", label: "News", detail: "Events & catalysts" },
+        ].map((item) => {
+          const active = mode === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setMode(item.id)}
+              aria-pressed={active}
+              style={{
+                flex: 1,
+                minWidth: 0,
+                border: active
+                  ? item.id === "technical"
+                    ? "1px solid rgba(170,0,0,0.65)"
+                    : "1px solid rgba(49,201,154,0.55)"
+                  : "1px solid transparent",
+                borderRadius: "10px",
+                padding: "12px 14px",
+                color: active ? "#f4f7f6" : "#929b98",
+                background: active
+                  ? item.id === "technical"
+                    ? "rgba(170,0,0,0.14)"
+                    : "rgba(49,201,154,0.10)"
+                  : "transparent",
+                cursor: "pointer",
+                textAlign: "left",
+                font: "inherit",
+              }}
+            >
+              <span style={{ display: "block", fontWeight: 650 }}>{item.label}</span>
+              <span style={{ display: "block", fontSize: "11px", marginTop: "3px", opacity: 0.75 }}>
+                {item.detail}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
+
+      {mode === "technical" ? (
+        <>
       <section className="search-section">
         <div className="section-heading">
           <div>
@@ -1250,6 +1365,11 @@ export default function App() {
             the chart before considering any trade.
           </p>
         </section>
+      )}
+
+        </>
+      ) : (
+        <NewsWorkspace />
       )}
 
       <footer className="site-footer">
