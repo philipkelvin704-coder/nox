@@ -268,7 +268,6 @@ function analyzeCandles(rawCandles) {
   const last = candles.at(-1);
   const previous = candles.at(-2);
 
-  // The structural stop levels are based on these recent swing extremes.
   const swingHigh = Math.max(...recent.map((c) => c.high));
   const swingLow = Math.min(...recent.map((c) => c.low));
 
@@ -531,7 +530,6 @@ function analyzeCandles(rawCandles) {
       "Wait for fresh structure. Do not force a trade in the middle of an unclear market.",
   };
 }
-
 
 /*
  * If a proposed target is closer to entry than the stop is, move the target
@@ -877,12 +875,12 @@ export default function App() {
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || "Binance market list request failed.");
+          throw new Error(data.error || "Binance Futures market list request failed.");
         }
 
         if (!Array.isArray(data.markets)) {
           throw new Error(
-            data.error || "Binance response did not contain a markets array."
+            data.error || "Binance Futures response did not contain a markets array."
           );
         }
 
@@ -900,7 +898,7 @@ export default function App() {
 
           return {
             label: `${displayName} (${baseAsset})`,
-            category: "Crypto · Binance spot data",
+            category: "Crypto · Binance USDⓈ-M Futures",
             symbol: exchangeSymbol,
             provider: "binance",
             baseAsset,
@@ -912,14 +910,14 @@ export default function App() {
 
         if (!cancelled) {
           setCryptoMarkets(markets);
-          setCryptoStatus(`${markets.length} crypto markets available`);
+          setCryptoStatus(`${markets.length} Binance Futures markets available`);
         }
       } catch (err) {
         if (!cancelled) {
           setCryptoStatus(
             `Crypto list unavailable: ${err?.message || "unknown error"}`
           );
-          console.error("Binance market list unavailable:", err);
+          console.error("Binance Futures market list unavailable:", err);
         }
       }
     }
@@ -983,7 +981,7 @@ export default function App() {
       let data;
 
       if (isCrypto(market)) {
-        setConnection("Requesting Binance historical crypto candles…");
+        setConnection("Requesting Binance USDⓈ-M Futures historical candles…");
 
         const params = new URLSearchParams({
           provider: "binance",
@@ -1013,16 +1011,16 @@ export default function App() {
         if (!response.ok) {
           throw new Error(
             result.error ||
-              "Could not retrieve Binance crypto candles. This crypto may not have a Binance USDT spot pair."
+              "Could not retrieve Binance Futures candles. The selected crypto may not have a USDT perpetual futures contract."
           );
         }
 
         if (!Array.isArray(result.candles)) {
-          throw new Error("Binance returned an invalid candle list.");
+          throw new Error("Binance Futures returned an invalid candle list.");
         }
 
         data = result.candles.map(normalizeCandle);
-        setConnection("Connected · Binance public crypto data");
+        setConnection("Connected · Binance USDⓈ-M Futures public data");
       } else {
         setConnection("Connecting to Deriv market data…");
 
@@ -1048,7 +1046,7 @@ export default function App() {
 
       setConnection(
         isCrypto(market)
-          ? "Data received · Binance"
+          ? "Data received · Binance USDⓈ-M Futures"
           : "Data received · Deriv connection closed"
       );
     } catch (err) {
@@ -1068,7 +1066,7 @@ export default function App() {
   }
 
   const providerDescription = isCrypto(market)
-    ? "Requesting Binance public crypto candles. No orders will be placed."
+    ? "Requesting Binance USDⓈ-M Futures public candles. No orders will be placed."
     : "Connecting to Deriv and requesting historical candles. No orders will be placed.";
 
   return (
@@ -1137,236 +1135,235 @@ export default function App() {
 
       {mode === "technical" ? (
         <>
-      <section className="search-section">
-        <div className="section-heading">
-          <div>
-            <h2>Select a market</h2>
-            <p>Inspect recent price behaviour and map a conditional setup.</p>
-          </div>
-        </div>
+          <section className="search-section">
+            <div className="section-heading">
+              <div>
+                <h2>Select a market</h2>
+                <p>Inspect recent price behaviour and map a conditional setup.</p>
+              </div>
+            </div>
 
-        <form className="market-form" onSubmit={runAnalysis}>
-          <div className="search-box">
-            <span className="search-icon" aria-hidden="true">⌕</span>
-            <input
-              value={search}
-              onChange={(event) => {
-                setSearch(event.target.value);
-                setMarket(null);
-                setSuggestionsOpen(true);
-                setAnalysis(null);
-                setCandles([]);
-                setError("");
-              }}
-              onFocus={() => setSuggestionsOpen(true)}
-              placeholder="Search synthetic indices, forex, metals or crypto…"
-              aria-label="Search markets"
-              autoComplete="off"
-            />
+            <form className="market-form" onSubmit={runAnalysis}>
+              <div className="search-box">
+                <span className="search-icon" aria-hidden="true">⌕</span>
+                <input
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setMarket(null);
+                    setSuggestionsOpen(true);
+                    setAnalysis(null);
+                    setCandles([]);
+                    setError("");
+                  }}
+                  onFocus={() => setSuggestionsOpen(true)}
+                  placeholder="Search synthetic indices, forex, metals or crypto…"
+                  aria-label="Search markets"
+                  autoComplete="off"
+                />
 
-            {market && (
-              <button
-                className="clear-selection"
-                type="button"
-                onClick={() => {
-                  setMarket(null);
-                  setSearch("");
-                  setAnalysis(null);
-                  setCandles([]);
-                  setError("");
-                  setSuggestionsOpen(true);
-                }}
-                aria-label="Clear market"
-              >
-                ×
-              </button>
-            )}
-          </div>
+                {market && (
+                  <button
+                    className="clear-selection"
+                    type="button"
+                    onClick={() => {
+                      setMarket(null);
+                      setSearch("");
+                      setAnalysis(null);
+                      setCandles([]);
+                      setError("");
+                      setSuggestionsOpen(true);
+                    }}
+                    aria-label="Clear market"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
 
-          {suggestionsOpen && (
-            <div className="market-suggestions">
-              {filteredMarkets.slice(0, 10).map((item) => (
-                <button
-                  type="button"
-                  className="suggestion"
-                  key={`${item.provider}-${item.symbol}`}
-                  onClick={() => chooseMarket(item)}
-                >
-                  <span>
-                    <strong>{item.label}</strong>
-                    <small>{item.category} · {item.symbol}</small>
-                  </span>
-                  <span className="suggestion-arrow">↗</span>
-                </button>
-              ))}
+              {suggestionsOpen && (
+                <div className="market-suggestions">
+                  {filteredMarkets.slice(0, 10).map((item) => (
+                    <button
+                      type="button"
+                      className="suggestion"
+                      key={`${item.provider}-${item.symbol}`}
+                      onClick={() => chooseMarket(item)}
+                    >
+                      <span>
+                        <strong>{item.label}</strong>
+                        <small>{item.category} · {item.symbol}</small>
+                      </span>
+                      <span className="suggestion-arrow">↗</span>
+                    </button>
+                  ))}
 
-              {!filteredMarkets.length && (
-                <div className="empty-suggestions">
-                  No matching markets. {cryptoStatus}
+                  {!filteredMarkets.length && (
+                    <div className="empty-suggestions">
+                      No matching markets. {cryptoStatus}
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
+
+              {market && (
+                <div className="selected-market">
+                  <span className="status-dot" />
+                  <span>
+                    Selected: <strong>{market.label}</strong>
+                  </span>
+                </div>
+              )}
+
+              <label className="timeframe-label">
+                Candle timeframe
+              </label>
+
+              <TimeframeDropdown
+                value={timeframe}
+                options={TIMEFRAMES}
+                onChange={chooseTimeframe}
+              />
+
+              {error && <p className="form-error">{error}</p>}
+
+              <button className="analyze-button" type="submit" disabled={loading}>
+                <span>{loading ? "ANALYZING MARKET…" : "ANALYZE MARKET"}</span>
+                <span aria-hidden="true">↗</span>
+              </button>
+            </form>
+
+            <p className="search-note">
+              Research mode · No live orders enabled · Signals are not financial advice
+            </p>
+
+            <p className="connection-status">
+              <span
+                className={
+                  connection.includes("Data received") ||
+                  connection.includes("Connected")
+                    ? "status-dot"
+                    : "status-dot muted"
+                }
+              />
+              {connection}
+            </p>
+
+            <p className="crypto-status">{cryptoStatus}</p>
+          </section>
+
+          {loading && (
+            <section className="analysis-loader">
+              <div className="loader-orbit">
+                <img className="loader-logo" src="/Nox.png" alt="" />
+              </div>
+              <h2>Reading market data</h2>
+              <p className="loader-description">{providerDescription}</p>
+            </section>
           )}
 
-          {market && (
-            <div className="selected-market">
-              <span className="status-dot" />
-              <span>
-                Selected: <strong>{market.label}</strong>
-              </span>
-            </div>
+          {candles.length > 0 && !loading && (
+            <section className="chart-section">
+              <div className="section-heading">
+                <div>
+                  <h2>Price action</h2>
+                  <p>
+                    {market?.label} · {TIMEFRAMES.find((tf) => tf.value === timeframe)?.label}
+                  </p>
+                </div>
+                <span className="chart-live-tag">HISTORICAL DATA</span>
+              </div>
+
+              <CandleChart candles={candles} />
+            </section>
           )}
 
-          <label className="timeframe-label">
-            Candle timeframe
-          </label>
+          {analysis && !loading && (
+            <section className="report-section">
+              <div className="report-header">
+                <div>
+                  <p className="eyebrow">MARKET REPORT</p>
+                  <h2>What price is showing</h2>
+                </div>
+                <span className={`action-badge ${analysis.action.toLowerCase()}`}>
+                  {analysis.action}
+                </span>
+              </div>
 
-          <TimeframeDropdown
-            value={timeframe}
-            options={TIMEFRAMES}
-            onChange={chooseTimeframe}
-          />
+              <div className="analysis-paragraphs">
+                {analysis.paragraphs.map((paragraph, index) => (
+                  <p className="analysis-paragraph" key={index}>
+                    {renderTextWithPrices(paragraph)}
+                  </p>
+                ))}
+              </div>
 
-          {error && <p className="form-error">{error}</p>}
+              <div className="signal-card">
+                <div className="signal-card-top">
+                  <div>
+                    <span className="field-label">ACTION</span>
+                    <h3>{analysis.action}</h3>
+                  </div>
 
-          <button className="analyze-button" type="submit" disabled={loading}>
-            <span>{loading ? "ANALYZING MARKET…" : "ANALYZE MARKET"}</span>
-            <span aria-hidden="true">↗</span>
-          </button>
-        </form>
+                  <div className="setup-type">
+                    <span className="field-label">SETUP TYPE</span>
+                    <strong>{analysis.setupType}</strong>
+                  </div>
+                </div>
 
-        <p className="search-note">
-          Research mode · No live orders enabled · Signals are not financial advice
-        </p>
+                {analysis.action === "WAIT" && (
+                  <div className="wait-message">
+                    <h4>WHAT TO WAIT FOR</h4>
+                    <p>{analysis.waitFor}</p>
+                  </div>
+                )}
 
-        <p className="connection-status">
-          <span
-            className={
-              connection.includes("Data received") ||
-              connection.includes("Connected")
-                ? "status-dot"
-                : "status-dot muted"
-            }
-          />
-          {connection}
-        </p>
+                {analysis.action === "WAIT" ? (
+                  <div className="scenario-grid">
+                    <ScenarioCard side="BUY" scenario={analysis.buy} />
+                    <ScenarioCard side="SELL" scenario={analysis.sell} />
+                  </div>
+                ) : (
+                  <div className="scenario-grid scenario-grid-single">
+                    <ScenarioCard
+                      side={analysis.action}
+                      scenario={
+                        analysis.action === "BUY" ? analysis.buy : analysis.sell
+                      }
+                    />
+                  </div>
+                )}
 
-        <p className="crypto-status">{cryptoStatus}</p>
-      </section>
+                <div className="report-detail">
+                  <h4>WHAT INVALIDATES THE IDEA</h4>
+                  <p>{analysis.invalidates}</p>
+                </div>
 
-      {loading && (
-        <section className="analysis-loader">
-          <div className="loader-orbit">
-            <img className="loader-logo" src="/Nox.png" alt="" />
-          </div>
-          <h2>Reading market data</h2>
-          <p className="loader-description">{providerDescription}</p>
-        </section>
-      )}
+                <div className="report-detail">
+                  <h4>WHAT TO DO NEXT</h4>
+                  <p>{analysis.next}</p>
+                </div>
+              </div>
 
-      {candles.length > 0 && !loading && (
-        <section className="chart-section">
-          <div className="section-heading">
-            <div>
-              <h2>Price action</h2>
-              <p>
-                {market?.label} · {TIMEFRAMES.find((tf) => tf.value === timeframe)?.label}
+              <div className="market-stats">
+                <PriceStat label="RECENT HIGH" value={analysis.recentHigh} />
+                <PriceStat label="RECENT LOW" value={analysis.recentLow} />
+                <div className="price-stat">
+                  <span className="price-stat-label">MARKET CONDITION</span>
+                  <strong>{analysis.marketCondition}</strong>
+                </div>
+              </div>
+
+              <p className="method-note">
+                Recent swing high/low use the highest high and lowest low among the
+                latest 20 returned candles. Stop-loss levels are set at these
+                structural extremes. Retracement zones are heuristic estimates,
+                not verified institutional order blocks. Entry, stop and target
+                levels are not guaranteed outcomes. Confirm the setup and risk on
+                the chart before considering any trade.
               </p>
-            </div>
-            <span className="chart-live-tag">HISTORICAL DATA</span>
-          </div>
-
-          <CandleChart candles={candles} />
-        </section>
-      )}
-
-      {analysis && !loading && (
-        <section className="report-section">
-          <div className="report-header">
-            <div>
-              <p className="eyebrow">MARKET REPORT</p>
-              <h2>What price is showing</h2>
-            </div>
-            <span className={`action-badge ${analysis.action.toLowerCase()}`}>
-              {analysis.action}
-            </span>
-          </div>
-
-          <div className="analysis-paragraphs">
-            {analysis.paragraphs.map((paragraph, index) => (
-              <p className="analysis-paragraph" key={index}>
-                {renderTextWithPrices(paragraph)}
-              </p>
-            ))}
-          </div>
-
-          <div className="signal-card">
-            <div className="signal-card-top">
-              <div>
-                <span className="field-label">ACTION</span>
-                <h3>{analysis.action}</h3>
-              </div>
-
-              <div className="setup-type">
-                <span className="field-label">SETUP TYPE</span>
-                <strong>{analysis.setupType}</strong>
-              </div>
-            </div>
-
-            {analysis.action === "WAIT" && (
-              <div className="wait-message">
-                <h4>WHAT TO WAIT FOR</h4>
-                <p>{analysis.waitFor}</p>
-              </div>
-            )}
-
-            {analysis.action === "WAIT" ? (
-              <div className="scenario-grid">
-                <ScenarioCard side="BUY" scenario={analysis.buy} />
-                <ScenarioCard side="SELL" scenario={analysis.sell} />
-              </div>
-            ) : (
-              <div className="scenario-grid scenario-grid-single">
-                <ScenarioCard
-                  side={analysis.action}
-                  scenario={
-                    analysis.action === "BUY" ? analysis.buy : analysis.sell
-                  }
-                />
-              </div>
-            )}
-
-            <div className="report-detail">
-              <h4>WHAT INVALIDATES THE IDEA</h4>
-              <p>{analysis.invalidates}</p>
-            </div>
-
-            <div className="report-detail">
-              <h4>WHAT TO DO NEXT</h4>
-              <p>{analysis.next}</p>
-            </div>
-          </div>
-
-          <div className="market-stats">
-            <PriceStat label="RECENT HIGH" value={analysis.recentHigh} />
-            <PriceStat label="RECENT LOW" value={analysis.recentLow} />
-            <div className="price-stat">
-              <span className="price-stat-label">MARKET CONDITION</span>
-              <strong>{analysis.marketCondition}</strong>
-            </div>
-          </div>
-
-          <p className="method-note">
-            Recent swing high/low use the highest high and lowest low among the
-            latest 20 returned candles. Stop-loss levels are set at these
-            structural extremes. Retracement zones are heuristic estimates,
-            not verified institutional order blocks. Entry, stop and target
-            levels are not guaranteed outcomes. Confirm the setup and risk on
-            the chart before considering any trade.
-          </p>
-        </section>
-      )}
-
+            </section>
+          )}
         </>
       ) : (
         <NewsWorkspace />

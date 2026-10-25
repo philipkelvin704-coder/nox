@@ -1,4 +1,3 @@
-
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -32,8 +31,8 @@ app.get("/api/status", (_req, res) => {
     providers: {
       twelveData: Boolean(process.env.TWELVE_DATA_API_KEY),
       alphaVantage: Boolean(process.env.ALPHA_VANTAGE_API_KEY),
-      binance: "public market data",
-      cryptoMarkets: "Binance public spot market data",
+      binance: "public USDⓈ-M Futures market data",
+      cryptoMarkets: "Binance USDⓈ-M Futures perpetual contracts",
       cryptoNews: "Free Crypto News search",
       deriv: "handled separately by deriv.js",
     },
@@ -110,7 +109,9 @@ async function fetchJson(url, options = {}) {
 function normalizeTwelveData(data) {
   if (!Array.isArray(data.values)) {
     throw new Error(
-      data.message || data["Error Message"] || "Twelve Data returned no candles."
+      data.message ||
+        data["Error Message"] ||
+        "Twelve Data returned no candles."
     );
   }
 
@@ -221,11 +222,18 @@ async function getAlphaVantageCandles(symbol, timeframe, limit) {
   return normalizeAlphaVantage(await fetchJson(url)).slice(-limit);
 }
 
-// ------------------------------ Binance ------------------------------
+// ------------------------------ Binance USDⓈ-M Futures ------------------------------
+
+// Public Futures market-data endpoint.
+// This does not place orders or require trading credentials.
+
+const BINANCE_FUTURES_BASE_URL = "https://fapi.binance.com";
 
 function normalizeBinance(rows) {
   if (!Array.isArray(rows)) {
-    throw new Error("Binance returned an unexpected candle response.");
+    throw new Error(
+      "Binance Futures returned an unexpected candle response."
+    );
   }
 
   return rows
@@ -242,35 +250,56 @@ function normalizeBinance(rows) {
 }
 
 async function getBinanceCandles(symbol, timeframe, limit) {
-  const url = new URL("https://api.binance.com/api/v3/klines");
+  const normalizedSymbol = symbol
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toUpperCase();
 
-  url.searchParams.set(
-    "symbol",
-    symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
+  const url = new URL(
+    `${BINANCE_FUTURES_BASE_URL}/fapi/v1/klines`
   );
+
+  url.searchParams.set("symbol", normalizedSymbol);
   url.searchParams.set("interval", TIMEFRAMES[timeframe].binance);
   url.searchParams.set("limit", String(Math.min(limit, 1000)));
 
-  const data = await fetchJson(url);
+  const data = await fetchJson(url, {
+    signal: AbortSignal.timeout(15000),
+  });
 
   if (!Array.isArray(data)) {
-    throw new Error(data.msg || "Binance could not return these candles.");
+    throw new Error(
+      data.msg || "Binance Futures could not return these candles."
+    );
   }
 
   return normalizeBinance(data);
 }
 
-// ------------------------------ Binance markets ------------------------------
+// ------------------------------ Binance Futures markets ------------------------------
+
+// Retain the existing endpoint so App.jsx does not need a route change.
+// Return active USDT-margined perpetual contracts only.
 
 app.get("/api/binance/markets", async (_req, res) => {
   try {
     const [exchangeInfo, tickerData] = await Promise.all([
-      fetchJson("https://api.binance.com/api/v3/exchangeInfo"),
-      fetchJson("https://api.binance.com/api/v3/ticker/24hr"),
+      fetchJson(
+        `${BINANCE_FUTURES_BASE_URL}/fapi/v1/exchangeInfo`,
+        { signal: AbortSignal.timeout(15000) }
+      ),
+      fetchJson(
+        `${BINANCE_FUTURES_BASE_URL}/fapi/v1/ticker/24hr`,
+        { signal: AbortSignal.timeout(15000) }
+      ),
     ]);
 
-    if (!Array.isArray(exchangeInfo.symbols) || !Array.isArray(tickerData)) {
-      throw new Error("Binance returned an unexpected market-list format.");
+    if (
+      !Array.isArray(exchangeInfo.symbols) ||
+      !Array.isArray(tickerData)
+    ) {
+      throw new Error(
+        "Binance Futures returned an unexpected market-list format."
+      );
     }
 
     const prices = new Map(
@@ -281,8 +310,8 @@ app.get("/api/binance/markets", async (_req, res) => {
       .filter(
         (item) =>
           item.status === "TRADING" &&
-          item.quoteAsset === "USDT" &&
-          item.isSpotTradingAllowed === true
+          item.contractType === "PERPETUAL" &&
+          item.quoteAsset === "USDT"
       )
       .map((item) => {
         const ticker = prices.get(item.symbol);
@@ -308,12 +337,24 @@ app.get("/api/binance/markets", async (_req, res) => {
       .sort((a, b) => b.quoteVolume - a.quoteVolume)
       .slice(0, 100);
 
-    res.json({ provider: "binance", count: markets.length, markets });
+    res.set("Cache-Control", "public, max-age=60");
+
+    res.json({
+      provider: "binance-futures",
+      marketType: "USDⓈ-M perpetual futures",
+      count: markets.length,
+      markets,
+    });
   } catch (error) {
-    console.error("Binance market-list request failed:", error.message);
+    console.error(
+      "Binance Futures market-list request failed:",
+      error.message
+    );
 
     res.status(502).json({
-      error: error.message || "Unable to retrieve Binance crypto markets.",
+      error:
+        error.message ||
+        "Unable to retrieve Binance Futures crypto markets.",
       markets: [],
     });
   }
