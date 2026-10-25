@@ -1,3 +1,4 @@
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -9,12 +10,6 @@ const PORT = process.env.PORT || 3001;
 
 app.use(cors({ origin: true }));
 app.use(express.json());
-
-// ============================================================
-// CONFIGURATION
-// ============================================================
-
-const BINANCE_SPOT_BASE_URL = "https://data-api.binance.vision";
 
 const TIMEFRAMES = {
   "1m": { twelve: "1min", alpha: "1min", binance: "1m" },
@@ -30,26 +25,6 @@ const TIMEFRAMES = {
   "1M": { twelve: "1month", alpha: "monthly", binance: "1M" },
 };
 
-// ============================================================
-// STATUS
-// ============================================================
-
-app.get("/", (_req, res) => {
-  res.json({
-    app: "NOX TRADE",
-    backend: "online",
-    message: "NOX backend is running.",
-    endpoints: [
-      "/api/status",
-      "/api/binance/markets",
-      "/api/test-binance-spot",
-      "/api/candles",
-      "/api/news/calendar",
-      "/api/news/crypto",
-    ],
-  });
-});
-
 app.get("/api/status", (_req, res) => {
   res.json({
     app: "NOX TRADE",
@@ -57,19 +32,12 @@ app.get("/api/status", (_req, res) => {
     providers: {
       twelveData: Boolean(process.env.TWELVE_DATA_API_KEY),
       alphaVantage: Boolean(process.env.ALPHA_VANTAGE_API_KEY),
-      binance: "public Spot market data",
-      cryptoMarkets: "Binance Spot USDT trading pairs",
-      cryptoCandles: "Binance Spot historical klines",
-      cryptoNews: "Free Crypto News search",
-      economicCalendar: "ShowMyTrades public calendar",
+      binance: "public market data",
+      cryptoMarkets: "Binance public spot market data",
       deriv: "handled separately by deriv.js",
     },
   });
 });
-
-// ============================================================
-// GENERAL HELPERS
-// ============================================================
 
 function normalizeTimeframe(value) {
   const input = String(value || "15m").trim();
@@ -111,11 +79,7 @@ async function fetchJson(url, options = {}) {
     ...(options.headers || {}),
   };
 
-  const response = await fetch(url, {
-    ...options,
-    headers,
-  });
-
+  const response = await fetch(url, { ...options, headers });
   const raw = await response.text();
 
   let data;
@@ -146,9 +110,7 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
-// ============================================================
-// TWELVE DATA
-// ============================================================
+// ------------------------------ Twelve Data ------------------------------
 
 function normalizeTwelveData(data) {
   if (!Array.isArray(data.values)) {
@@ -188,24 +150,17 @@ async function getTwelveDataCandles(symbol, timeframe, limit) {
     throw new Error("TWELVE_DATA_API_KEY is missing from .env.");
   }
 
-  const url = new URL(
-    "https://api.twelvedata.com/time_series"
-  );
+  const url = new URL("https://api.twelvedata.com/time_series");
 
   url.searchParams.set("symbol", symbol.replace("-", "/"));
   url.searchParams.set("interval", interval);
   url.searchParams.set("outputsize", String(limit));
-  url.searchParams.set(
-    "apikey",
-    process.env.TWELVE_DATA_API_KEY
-  );
+  url.searchParams.set("apikey", process.env.TWELVE_DATA_API_KEY);
 
   return normalizeTwelveData(await fetchJson(url)).slice(-limit);
 }
 
-// ============================================================
-// ALPHA VANTAGE
-// ============================================================
+// ------------------------------ Alpha Vantage ------------------------------
 
 function normalizeAlphaVantage(data) {
   const seriesKey = Object.keys(data).find((key) =>
@@ -234,16 +189,10 @@ function normalizeAlphaVantage(data) {
     .filter((c) =>
       [c.open, c.high, c.low, c.close].every(Number.isFinite)
     )
-    .sort(
-      (a, b) => Date.parse(a.time) - Date.parse(b.time)
-    );
+    .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
 }
 
-async function getAlphaVantageCandles(
-  symbol,
-  timeframe,
-  limit
-) {
+async function getAlphaVantageCandles(symbol, timeframe, limit) {
   const interval = TIMEFRAMES[timeframe].alpha;
 
   if (!interval) {
@@ -253,14 +202,10 @@ async function getAlphaVantageCandles(
   }
 
   if (!process.env.ALPHA_VANTAGE_API_KEY) {
-    throw new Error(
-      "ALPHA_VANTAGE_API_KEY is missing from .env."
-    );
+    throw new Error("ALPHA_VANTAGE_API_KEY is missing from .env.");
   }
 
-  const pair = symbol
-    .replace(/[^A-Za-z]/g, "")
-    .toUpperCase();
+  const pair = symbol.replace(/[^A-Za-z]/g, "").toUpperCase();
 
   if (!/^[A-Z]{6}$/.test(pair)) {
     throw new Error(
@@ -268,24 +213,14 @@ async function getAlphaVantageCandles(
     );
   }
 
-  const url = new URL(
-    "https://www.alphavantage.co/query"
-  );
+  const url = new URL("https://www.alphavantage.co/query");
 
   url.searchParams.set("from_symbol", pair.slice(0, 3));
   url.searchParams.set("to_symbol", pair.slice(3, 6));
-  url.searchParams.set(
-    "apikey",
-    process.env.ALPHA_VANTAGE_API_KEY
-  );
+  url.searchParams.set("apikey", process.env.ALPHA_VANTAGE_API_KEY);
 
-  if (
-    ["daily", "weekly", "monthly"].includes(interval)
-  ) {
-    url.searchParams.set(
-      "function",
-      `FX_${interval.toUpperCase()}`
-    );
+  if (["daily", "weekly", "monthly"].includes(interval)) {
+    url.searchParams.set("function", `FX_${interval.toUpperCase()}`);
   } else {
     url.searchParams.set("function", "FX_INTRADAY");
     url.searchParams.set("interval", interval);
@@ -295,128 +230,51 @@ async function getAlphaVantageCandles(
     );
   }
 
-  return normalizeAlphaVantage(
-    await fetchJson(url)
-  ).slice(-limit);
+  return normalizeAlphaVantage(await fetchJson(url)).slice(-limit);
 }
 
-// ============================================================
-// BINANCE SPOT CANDLES
-// ============================================================
+// ------------------------------ Binance Spot candles ------------------------------
 
 function normalizeBinance(rows) {
   if (!Array.isArray(rows)) {
-    throw new Error(
-      "Binance Spot returned an unexpected candle response."
-    );
+    throw new Error("Binance returned an unexpected candle response.");
   }
 
-  return rows
-    .map((c) => ({
-      time: new Date(Number(c[0])).toISOString(),
-      open: Number(c[1]),
-      high: Number(c[2]),
-      low: Number(c[3]),
-      close: Number(c[4]),
-    }))
-    .filter((c) =>
-      [c.open, c.high, c.low, c.close].every(Number.isFinite)
-    );
+  return rows.map((c) => ({
+    time: new Date(Number(c[0])).toISOString(),
+    open: Number(c[1]),
+    high: Number(c[2]),
+    low: Number(c[3]),
+    close: Number(c[4]),
+  }));
 }
 
-async function getBinanceCandles(
-  symbol,
-  timeframe,
-  limit
-) {
-  const normalizedSymbol = symbol
-    .replace(/[^A-Za-z0-9]/g, "")
-    .toUpperCase();
+async function getBinanceCandles(symbol, timeframe, limit) {
+  const url = new URL("https://api.binance.com/api/v3/klines");
 
-  const url = new URL(
-    `${BINANCE_SPOT_BASE_URL}/api/v3/klines`
-  );
-
-  url.searchParams.set("symbol", normalizedSymbol);
   url.searchParams.set(
-    "interval",
-    TIMEFRAMES[timeframe].binance
+    "symbol",
+    symbol.replace(/[^A-Za-z0-9]/g, "").toUpperCase()
   );
-  url.searchParams.set(
-    "limit",
-    String(Math.min(limit, 1000))
-  );
+  url.searchParams.set("interval", TIMEFRAMES[timeframe].binance);
+  url.searchParams.set("limit", String(Math.min(limit, 1000)));
 
-  const data = await fetchJson(url, {
-    signal: AbortSignal.timeout(15000),
-  });
+  const data = await fetchJson(url);
 
   if (!Array.isArray(data)) {
-    throw new Error(
-      data.msg ||
-        "Binance Spot could not return these candles."
-    );
+    throw new Error(data.msg || "Binance could not return these candles.");
   }
 
   return normalizeBinance(data);
 }
 
-// ============================================================
-// BINANCE SPOT CONNECTIVITY TEST
-// ============================================================
-
-// Diagnostic route: checks whether the deployed backend can
-// access Binance Spot public market data.
-
-app.get("/api/test-binance-spot", async (_req, res) => {
-  try {
-    const data = await fetchJson(
-      `${BINANCE_SPOT_BASE_URL}/api/v3/exchangeInfo?symbol=BTCUSDT`,
-      {
-        signal: AbortSignal.timeout(15000),
-      }
-    );
-
-    res.json({
-      success: true,
-      provider: "Binance Spot",
-      symbol: data.symbols?.[0]?.symbol ?? null,
-    });
-  } catch (error) {
-    console.error(
-      "Binance Spot connectivity test failed:",
-      error.message
-    );
-
-    res.status(502).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-// ============================================================
-// BINANCE SPOT MARKETS
-// ============================================================
-
-// Keep the existing route so App.jsx does not need a route
-// change. It now returns spot trading pairs instead of futures.
+// ------------------------------ Binance Spot markets ------------------------------
 
 app.get("/api/binance/markets", async (_req, res) => {
   try {
     const [exchangeInfo, tickerData] = await Promise.all([
-      fetchJson(
-        `${BINANCE_SPOT_BASE_URL}/api/v3/exchangeInfo`,
-        {
-          signal: AbortSignal.timeout(20000),
-        }
-      ),
-      fetchJson(
-        `${BINANCE_SPOT_BASE_URL}/api/v3/ticker/24hr`,
-        {
-          signal: AbortSignal.timeout(20000),
-        }
-      ),
+      fetchJson("https://api.binance.com/api/v3/exchangeInfo"),
+      fetchJson("https://api.binance.com/api/v3/ticker/24hr"),
     ]);
 
     if (
@@ -424,15 +282,12 @@ app.get("/api/binance/markets", async (_req, res) => {
       !Array.isArray(tickerData)
     ) {
       throw new Error(
-        "Binance Spot returned an unexpected market-list format."
+        "Binance returned an unexpected market-list format."
       );
     }
 
     const prices = new Map(
-      tickerData.map((ticker) => [
-        ticker.symbol,
-        ticker,
-      ])
+      tickerData.map((ticker) => [ticker.symbol, ticker])
     );
 
     const markets = exchangeInfo.symbols
@@ -440,8 +295,7 @@ app.get("/api/binance/markets", async (_req, res) => {
         (item) =>
           item.status === "TRADING" &&
           item.quoteAsset === "USDT" &&
-          item.isSpotTradingAllowed !== false &&
-          item.permissions?.includes("SPOT") !== false
+          item.isSpotTradingAllowed === true
       )
       .map((item) => {
         const ticker = prices.get(item.symbol);
@@ -464,73 +318,55 @@ app.get("/api/binance/markets", async (_req, res) => {
           Number.isFinite(item.currentPrice) &&
           Number.isFinite(item.quoteVolume)
       )
-      .sort(
-        (a, b) => b.quoteVolume - a.quoteVolume
-      )
+      .sort((a, b) => b.quoteVolume - a.quoteVolume)
       .slice(0, 100);
 
     res.set("Cache-Control", "public, max-age=60");
 
     res.json({
-      provider: "binance-spot",
+      provider: "binance",
       marketType: "Spot",
       count: markets.length,
       markets,
     });
   } catch (error) {
     console.error(
-      "Binance Spot market-list request failed:",
+      "Binance market-list request failed:",
       error.message
     );
 
     res.status(502).json({
       error:
         error.message ||
-        "Unable to retrieve Binance Spot crypto markets.",
+        "Unable to retrieve Binance crypto markets.",
       markets: [],
     });
   }
 });
 
-// ============================================================
-// SHARED CANDLE ENDPOINT
-// ============================================================
+// ------------------------------ Shared candle endpoint ------------------------------
 
 app.get("/api/candles", async (req, res) => {
   try {
-    const provider = String(
-      req.query.provider || ""
-    ).toLowerCase();
-
+    const provider = String(req.query.provider || "").toLowerCase();
     const symbol = normalizeSymbol(req.query.symbol);
-
     const timeframe = normalizeTimeframe(
       req.query.timeframe || "15m"
     );
 
-    const parsedLimit = Number.parseInt(
-      req.query.limit || "100",
-      10
-    );
-
+    const parsedLimit = Number.parseInt(req.query.limit || "100", 10);
     const limit = Math.min(
       500,
       Math.max(
         20,
-        Number.isFinite(parsedLimit)
-          ? parsedLimit
-          : 100
+        Number.isFinite(parsedLimit) ? parsedLimit : 100
       )
     );
 
     let candles;
 
     if (provider === "twelvedata") {
-      candles = await getTwelveDataCandles(
-        symbol,
-        timeframe,
-        limit
-      );
+      candles = await getTwelveDataCandles(symbol, timeframe, limit);
     } else if (provider === "alphavantage") {
       candles = await getAlphaVantageCandles(
         symbol,
@@ -538,11 +374,7 @@ app.get("/api/candles", async (req, res) => {
         limit
       );
     } else if (provider === "binance") {
-      candles = await getBinanceCandles(
-        symbol,
-        timeframe,
-        limit
-      );
+      candles = await getBinanceCandles(symbol, timeframe, limit);
     } else {
       return res.status(400).json({
         error:
@@ -564,30 +396,20 @@ app.get("/api/candles", async (req, res) => {
       candles,
     });
   } catch (error) {
-    console.error(
-      "Candle request failed:",
-      error.message
-    );
+    console.error("Candle request failed:", error.message);
 
     res.status(502).json({
-      error:
-        error.message ||
-        "Unable to load candles.",
+      error: error.message || "Unable to load candles.",
     });
   }
 });
 
-// ============================================================
-// NEWS CACHE
-// ============================================================
+// ------------------------------ Free News data sources ------------------------------
 
+// Provider responses are cached in this process to reduce repeated public requests.
 const newsCache = new Map();
 
-async function getCachedNews(
-  key,
-  ttlMs,
-  loader
-) {
+async function getCachedNews(key, ttlMs, loader) {
   const cached = newsCache.get(key);
 
   if (cached && cached.expiresAt > Date.now()) {
@@ -603,10 +425,6 @@ async function getCachedNews(
 
   return value;
 }
-
-// ============================================================
-// ECONOMIC CALENDAR
-// ============================================================
 
 app.get("/api/news/calendar", async (req, res) => {
   try {
@@ -634,44 +452,28 @@ app.get("/api/news/calendar", async (req, res) => {
     )
       .split(",")
       .map((value) => value.trim().toUpperCase())
-      .filter((value) =>
-        allowedCurrencies.has(value)
-      );
+      .filter((value) => allowedCurrencies.has(value));
 
-    const impacts = String(
-      req.query.impact || "high,medium"
-    )
+    const impacts = String(req.query.impact || "high,medium")
       .split(",")
       .map((value) => value.trim().toLowerCase())
-      .filter((value) =>
-        allowedImpacts.has(value)
-      );
+      .filter((value) => allowedImpacts.has(value));
 
-    const parsedDays = Number.parseInt(
-      req.query.days || "7",
-      10
-    );
-
+    const parsedDays = Number.parseInt(req.query.days || "7", 10);
     const days = Math.min(
       30,
-      Math.max(
-        1,
-        Number.isFinite(parsedDays)
-          ? parsedDays
-          : 7
-      )
+      Math.max(1, Number.isFinite(parsedDays) ? parsedDays : 7)
     );
 
     if (!currencies.length || !impacts.length) {
       return res.status(400).json({
-        error:
-          "Choose supported currencies and impact levels.",
+        error: "Choose supported currencies and impact levels.",
       });
     }
 
-    const key =
-      `calendar:${currencies.slice().sort().join(",")}:` +
-      `${impacts.slice().sort().join(",")}:${days}`;
+    const key = `calendar:${currencies
+      .sort()
+      .join(",")}:${impacts.sort().join(",")}:${days}`;
 
     const data = await getCachedNews(
       key,
@@ -681,20 +483,9 @@ app.get("/api/news/calendar", async (req, res) => {
           "https://showmytrades.com/api/public/calendar/v1"
         );
 
-        url.searchParams.set(
-          "currency",
-          currencies.join(",")
-        );
-
-        url.searchParams.set(
-          "impact",
-          impacts.join(",")
-        );
-
-        url.searchParams.set(
-          "days",
-          String(days)
-        );
+        url.searchParams.set("currency", currencies.join(","));
+        url.searchParams.set("impact", impacts.join(","));
+        url.searchParams.set("days", String(days));
 
         return fetchJson(url.toString(), {
           signal: AbortSignal.timeout(12000),
@@ -703,11 +494,7 @@ app.get("/api/news/calendar", async (req, res) => {
     );
 
     res.set("Cache-Control", "public, max-age=60");
-
-    res.json({
-      ...data,
-      provider: "ShowMyTrades",
-    });
+    res.json({ ...data, provider: "ShowMyTrades" });
   } catch (error) {
     console.error(
       "Economic calendar request failed:",
@@ -722,110 +509,76 @@ app.get("/api/news/calendar", async (req, res) => {
   }
 });
 
-// ============================================================
-// CRYPTO NEWS SEARCH
-// ============================================================
-
 app.get("/api/news/crypto", async (req, res) => {
   try {
-    const query = String(
-      req.query.q || ""
-    )
+    const category = String(req.query.category || "")
       .trim()
-      .slice(0, 100);
+      .toLowerCase();
 
-    const cacheKey =
-      `crypto:${query.toLowerCase() || "latest"}`;
+    const allowedCategories = new Set([
+      "bitcoin",
+      "defi",
+      "ethereum",
+      "general",
+      "research",
+      "institutional",
+      "etf",
+      "derivatives",
+      "onchain",
+      "macro",
+      "quant",
+      "journalism",
+      "nft",
+      "trading",
+      "solana",
+      "security",
+      "stablecoin",
+    ]);
+
+    if (category && !allowedCategories.has(category)) {
+      return res.status(400).json({
+        error: "Unsupported crypto-news category.",
+      });
+    }
+
+    const key = `crypto:${category || "latest"}`;
 
     const data = await getCachedNews(
-      cacheKey,
-      2 * 60 * 1000,
+      key,
+      5 * 60 * 1000,
       async () => {
         const url = new URL(
-          query
-            ? "https://cryptocurrency.cv/api/search"
+          category
+            ? `https://cryptocurrency.cv/api/${encodeURIComponent(category)}`
             : "https://cryptocurrency.cv/api/news"
         );
 
-        if (query) {
-          url.searchParams.set("q", query);
-          url.searchParams.set("limit", "20");
-        } else {
+        if (!category) {
           url.searchParams.set("limit", "3");
         }
 
         return fetchJson(url.toString(), {
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(12000),
         });
       }
     );
 
-    const articles = Array.isArray(data.articles)
-      ? data.articles
-      : [];
-
-    const sortedArticles = [...articles].sort(
-      (a, b) => {
-        const dateA = Date.parse(
-          a.pubDate ||
-            a.publishedAt ||
-            a.published_at ||
-            ""
-        );
-
-        const dateB = Date.parse(
-          b.pubDate ||
-            b.publishedAt ||
-            b.published_at ||
-            ""
-        );
-
-        return (
-          (Number.isFinite(dateB) ? dateB : 0) -
-          (Number.isFinite(dateA) ? dateA : 0)
-        );
-      }
-    );
-
     res.set("Cache-Control", "public, max-age=60");
-
-    res.json({
-      ...data,
-      articles: sortedArticles,
-      query,
-      provider: "Free Crypto News",
-    });
+    res.json({ ...data, provider: "Free Crypto News" });
   } catch (error) {
-    console.error(
-      "Crypto news request failed:",
-      error.message
-    );
+    console.error("Crypto news request failed:", error.message);
 
     res.status(502).json({
-      error:
-        error.message ||
-        "Unable to retrieve crypto news.",
-      articles: [],
+      error: error.message || "Unable to retrieve crypto news.",
     });
   }
 });
 
-// ============================================================
-// UNKNOWN API ROUTES
-// ============================================================
-
-app.use("/api", (_req, res) => {
-  res.status(404).json({
-    error: "API route not found.",
-  });
-});
-
-// ============================================================
-// START SERVER
-// ============================================================
+// Always return JSON for unknown API routes.
+app.use("/api", (_req, res) =>
+  res.status(404).json({ error: "API route not found." })
+);
 
 app.listen(PORT, () => {
-  console.log(
-    `NOX TRADE backend running on port ${PORT}`
-  );
+  console.log(`NOX TRADE backend running at http://localhost:${PORT}`);
 });

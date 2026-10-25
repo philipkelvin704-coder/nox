@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectToDeriv, getCandles, formatCandleTime } from "./deriv";
 import "./App.css";
@@ -268,6 +269,7 @@ function analyzeCandles(rawCandles) {
   const last = candles.at(-1);
   const previous = candles.at(-2);
 
+  // Structural stop levels use recent swing extremes.
   const swingHigh = Math.max(...recent.map((c) => c.high));
   const swingLow = Math.min(...recent.map((c) => c.low));
 
@@ -561,7 +563,9 @@ function enforceMinimumRewardRisk(analysis) {
 
       adjusted[side] = {
         ...scenario,
-        takeProfit: Number((entry + direction * risk * 1.5).toFixed(precision)),
+        takeProfit: Number(
+          (entry + direction * risk * 1.5).toFixed(precision)
+        ),
       };
     }
   });
@@ -794,12 +798,16 @@ function ScenarioCard({ side, scenario }) {
   const hasRange = watchLow !== watchHigh;
 
   return (
-    <article className={`scenario-card ${buy ? "scenario-buy" : "scenario-sell"}`}>
+    <article
+      className={`scenario-card ${buy ? "scenario-buy" : "scenario-sell"}`}
+    >
       <div className="scenario-heading">
         <span className={`signal-pill ${buy ? "buy-pill" : "sell-pill"}`}>
           {side}
         </span>
-        <span>{buy ? "If price breaks upward" : "If price breaks downward"}</span>
+        <span>
+          {buy ? "If price breaks upward" : "If price breaks downward"}
+        </span>
       </div>
 
       <div className="scenario-watch">
@@ -875,12 +883,12 @@ export default function App() {
         const data = await response.json();
 
         if (!response.ok) {
-          throw new Error(data.error || "Binance Futures market list request failed.");
+          throw new Error(data.error || "Binance market list request failed.");
         }
 
         if (!Array.isArray(data.markets)) {
           throw new Error(
-            data.error || "Binance Futures response did not contain a markets array."
+            data.error || "Binance response did not contain a markets array."
           );
         }
 
@@ -888,17 +896,20 @@ export default function App() {
           const exchangeSymbol = String(
             coin.exchangeSymbol || coin.id || coin.symbol || ""
           ).toUpperCase();
+
           const rawBaseAsset = String(
             coin.baseAsset || coin.symbol || exchangeSymbol
           ).toUpperCase();
+
           const baseAsset = rawBaseAsset.endsWith("USDT")
             ? rawBaseAsset.slice(0, -4)
             : rawBaseAsset;
+
           const displayName = coin.name || baseAsset;
 
           return {
             label: `${displayName} (${baseAsset})`,
-            category: "Crypto · Binance USDⓈ-M Futures",
+            category: "Crypto · Binance spot data",
             symbol: exchangeSymbol,
             provider: "binance",
             baseAsset,
@@ -910,14 +921,14 @@ export default function App() {
 
         if (!cancelled) {
           setCryptoMarkets(markets);
-          setCryptoStatus(`${markets.length} Binance Futures markets available`);
+          setCryptoStatus(`${markets.length} crypto markets available`);
         }
       } catch (err) {
         if (!cancelled) {
           setCryptoStatus(
             `Crypto list unavailable: ${err?.message || "unknown error"}`
           );
-          console.error("Binance Futures market list unavailable:", err);
+          console.error("Binance market list unavailable:", err);
         }
       }
     }
@@ -981,7 +992,7 @@ export default function App() {
       let data;
 
       if (isCrypto(market)) {
-        setConnection("Requesting Binance USDⓈ-M Futures historical candles…");
+        setConnection("Requesting Binance historical crypto candles…");
 
         const params = new URLSearchParams({
           provider: "binance",
@@ -1011,16 +1022,16 @@ export default function App() {
         if (!response.ok) {
           throw new Error(
             result.error ||
-              "Could not retrieve Binance Futures candles. The selected crypto may not have a USDT perpetual futures contract."
+              "Could not retrieve Binance crypto candles. This crypto may not have a Binance USDT spot pair."
           );
         }
 
         if (!Array.isArray(result.candles)) {
-          throw new Error("Binance Futures returned an invalid candle list.");
+          throw new Error("Binance returned an invalid candle list.");
         }
 
         data = result.candles.map(normalizeCandle);
-        setConnection("Connected · Binance USDⓈ-M Futures public data");
+        setConnection("Connected · Binance public crypto data");
       } else {
         setConnection("Connecting to Deriv market data…");
 
@@ -1046,7 +1057,7 @@ export default function App() {
 
       setConnection(
         isCrypto(market)
-          ? "Data received · Binance USDⓈ-M Futures"
+          ? "Data received · Binance"
           : "Data received · Deriv connection closed"
       );
     } catch (err) {
@@ -1066,7 +1077,7 @@ export default function App() {
   }
 
   const providerDescription = isCrypto(market)
-    ? "Requesting Binance USDⓈ-M Futures public candles. No orders will be placed."
+    ? "Requesting Binance public crypto candles. No orders will be placed."
     : "Connecting to Deriv and requesting historical candles. No orders will be placed.";
 
   return (
@@ -1097,6 +1108,7 @@ export default function App() {
           { id: "news", label: "News", detail: "Events & catalysts" },
         ].map((item) => {
           const active = mode === item.id;
+
           return (
             <button
               key={item.id}
@@ -1124,8 +1136,17 @@ export default function App() {
                 font: "inherit",
               }}
             >
-              <span style={{ display: "block", fontWeight: 650 }}>{item.label}</span>
-              <span style={{ display: "block", fontSize: "11px", marginTop: "3px", opacity: 0.75 }}>
+              <span style={{ display: "block", fontWeight: 650 }}>
+                {item.label}
+              </span>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: "11px",
+                  marginTop: "3px",
+                  opacity: 0.75,
+                }}
+              >
                 {item.detail}
               </span>
             </button>
@@ -1139,13 +1160,17 @@ export default function App() {
             <div className="section-heading">
               <div>
                 <h2>Select a market</h2>
-                <p>Inspect recent price behaviour and map a conditional setup.</p>
+                <p>
+                  Inspect recent price behaviour and map a conditional setup.
+                </p>
               </div>
             </div>
 
             <form className="market-form" onSubmit={runAnalysis}>
               <div className="search-box">
-                <span className="search-icon" aria-hidden="true">⌕</span>
+                <span className="search-icon" aria-hidden="true">
+                  ⌕
+                </span>
                 <input
                   value={search}
                   onChange={(event) => {
@@ -1192,7 +1217,9 @@ export default function App() {
                     >
                       <span>
                         <strong>{item.label}</strong>
-                        <small>{item.category} · {item.symbol}</small>
+                        <small>
+                          {item.category} · {item.symbol}
+                        </small>
                       </span>
                       <span className="suggestion-arrow">↗</span>
                     </button>
@@ -1227,14 +1254,21 @@ export default function App() {
 
               {error && <p className="form-error">{error}</p>}
 
-              <button className="analyze-button" type="submit" disabled={loading}>
-                <span>{loading ? "ANALYZING MARKET…" : "ANALYZE MARKET"}</span>
+              <button
+                className="analyze-button"
+                type="submit"
+                disabled={loading}
+              >
+                <span>
+                  {loading ? "ANALYZING MARKET…" : "ANALYZE MARKET"}
+                </span>
                 <span aria-hidden="true">↗</span>
               </button>
             </form>
 
             <p className="search-note">
-              Research mode · No live orders enabled · Signals are not financial advice
+              Research mode · No live orders enabled · Signals are not financial
+              advice
             </p>
 
             <p className="connection-status">
@@ -1268,7 +1302,8 @@ export default function App() {
                 <div>
                   <h2>Price action</h2>
                   <p>
-                    {market?.label} · {TIMEFRAMES.find((tf) => tf.value === timeframe)?.label}
+                    {market?.label} ·{" "}
+                    {TIMEFRAMES.find((tf) => tf.value === timeframe)?.label}
                   </p>
                 </div>
                 <span className="chart-live-tag">HISTORICAL DATA</span>
@@ -1285,7 +1320,9 @@ export default function App() {
                   <p className="eyebrow">MARKET REPORT</p>
                   <h2>What price is showing</h2>
                 </div>
-                <span className={`action-badge ${analysis.action.toLowerCase()}`}>
+                <span
+                  className={`action-badge ${analysis.action.toLowerCase()}`}
+                >
                   {analysis.action}
                 </span>
               </div>
@@ -1328,7 +1365,9 @@ export default function App() {
                     <ScenarioCard
                       side={analysis.action}
                       scenario={
-                        analysis.action === "BUY" ? analysis.buy : analysis.sell
+                        analysis.action === "BUY"
+                          ? analysis.buy
+                          : analysis.sell
                       }
                     />
                   </div>
@@ -1355,12 +1394,12 @@ export default function App() {
               </div>
 
               <p className="method-note">
-                Recent swing high/low use the highest high and lowest low among the
-                latest 20 returned candles. Stop-loss levels are set at these
-                structural extremes. Retracement zones are heuristic estimates,
-                not verified institutional order blocks. Entry, stop and target
-                levels are not guaranteed outcomes. Confirm the setup and risk on
-                the chart before considering any trade.
+                Recent swing high/low use the highest high and lowest low among
+                the latest 20 returned candles. Stop-loss levels are set at
+                these structural extremes. Retracement zones are heuristic
+                estimates, not verified institutional order blocks. Entry, stop
+                and target levels are not guaranteed outcomes. Confirm the setup
+                and risk on the chart before considering any trade.
               </p>
             </section>
           )}
