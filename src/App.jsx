@@ -269,7 +269,6 @@ function analyzeCandles(rawCandles) {
   const last = candles.at(-1);
   const previous = candles.at(-2);
 
-  // Structural stop levels use recent swing extremes.
   const swingHigh = Math.max(...recent.map((c) => c.high));
   const swingLow = Math.min(...recent.map((c) => c.low));
 
@@ -563,9 +562,7 @@ function enforceMinimumRewardRisk(analysis) {
 
       adjusted[side] = {
         ...scenario,
-        takeProfit: Number(
-          (entry + direction * risk * 1.5).toFixed(precision)
-        ),
+        takeProfit: Number((entry + direction * risk * 1.5).toFixed(precision)),
       };
     }
   });
@@ -798,16 +795,12 @@ function ScenarioCard({ side, scenario }) {
   const hasRange = watchLow !== watchHigh;
 
   return (
-    <article
-      className={`scenario-card ${buy ? "scenario-buy" : "scenario-sell"}`}
-    >
+    <article className={`scenario-card ${buy ? "scenario-buy" : "scenario-sell"}`}>
       <div className="scenario-heading">
         <span className={`signal-pill ${buy ? "buy-pill" : "sell-pill"}`}>
           {side}
         </span>
-        <span>
-          {buy ? "If price breaks upward" : "If price breaks downward"}
-        </span>
+        <span>{buy ? "If price breaks upward" : "If price breaks downward"}</span>
       </div>
 
       <div className="scenario-watch">
@@ -876,7 +869,7 @@ export default function App() {
             .slice(0, 100);
 
           throw new Error(
-            `Expected JSON from ${endpoint} but received HTML or another content type. Check your backend URL and deployment. Response: ${bodyPreview}`
+            `Expected JSON from ${endpoint} but received HTML or another content type. Check your backend URL. Response: ${bodyPreview}`
           );
         }
 
@@ -1242,9 +1235,7 @@ export default function App() {
                 </div>
               )}
 
-              <label className="timeframe-label">
-                Candle timeframe
-              </label>
+              <label className="timeframe-label">Candle timeframe</label>
 
               <TimeframeDropdown
                 value={timeframe}
@@ -1320,9 +1311,7 @@ export default function App() {
                   <p className="eyebrow">MARKET REPORT</p>
                   <h2>What price is showing</h2>
                 </div>
-                <span
-                  className={`action-badge ${analysis.action.toLowerCase()}`}
-                >
+                <span className={`action-badge ${analysis.action.toLowerCase()}`}>
                   {analysis.action}
                 </span>
               </div>
