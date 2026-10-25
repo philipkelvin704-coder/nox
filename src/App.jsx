@@ -1,4 +1,3 @@
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectToDeriv, getCandles, formatCandleTime } from "./deriv";
 import "./App.css";
@@ -269,6 +268,7 @@ function analyzeCandles(rawCandles) {
   const last = candles.at(-1);
   const previous = candles.at(-2);
 
+  // The structural stop levels are based on these recent swing extremes.
   const swingHigh = Math.max(...recent.map((c) => c.high));
   const swingLow = Math.min(...recent.map((c) => c.low));
 
@@ -532,6 +532,7 @@ function analyzeCandles(rawCandles) {
   };
 }
 
+
 /*
  * If a proposed target is closer to entry than the stop is, move the target
  * so the potential reward is at least 1.5 times the stop distance.
@@ -568,6 +569,174 @@ function enforceMinimumRewardRisk(analysis) {
   });
 
   return adjusted;
+}
+
+
+const PLAN_TERMINAL_STATUSES = new Set(["INVALIDATED", "TARGET REACHED"]);
+
+function getPlanStorageKey(market, timeframe) {
+  const provider = isCrypto(market) ? "binance" : "deriv";
+  const symbol = String(market?.exchangeSymbol || market?.symbol || "").toUpperCase();
+  return `nox.activePlan.v1:${provider}:${symbol}:${timeframe}`;
+}
+
+function readSavedPlan(storageKey) {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePlan(storageKey, plan) {
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify(plan));
+  } catch {
+    // The active plan still works for this page session if storage is unavailable.
+  }
+}
+
+function removeSavedPlan(storageKey) {
+  try {
+    window.localStorage.removeItem(storageKey);
+  } catch {
+    // Ignore storage restrictions; analysis can continue in memory.
+  }
+}
+
+function getCompletedCandles(rawCandles, timeframeSeconds) {
+  const nowSeconds = Date.now() / 1000;
+  return (rawCandles || [])
+    .map(normalizeCandle)
+    .filter((candle) =>
+      Number.isFinite(candle.epoch) &&
+      [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite) &&
+      candle.epoch + timeframeSeconds <= nowSeconds
+    )
+    .sort((a, b) => a.epoch - b.epoch);
+}
+
+function createActivePlan(analysis, marketKey, completedCandles) {
+  const direction = analysis.action;
+  const side = direction.toLowerCase();
+  const referenceCandle = completedCandles.at(-1);
+
+  return {
+    marketKey,
+    direction,
+    analysisSnapshot: analysis,
+    status: "WAITING FOR ZONE",
+    zoneTouched: false,
+    zoneTouchEpoch: null,
+    createdAt: Date.now(),
+    referenceCandleEpoch: referenceCandle.epoch,
+    lastEvaluatedEpoch: referenceCandle.epoch,
+    statusMessage: `The ${direction} setup is locked. Its entry zone, stop-loss and target will not be recalculated on each analysis.`,
+    originalEntry: analysis[side].entry,
+    originalStopLoss: analysis[side].stopLoss,
+    originalTakeProfit: analysis[side].takeProfit,
+  };
+}
+
+function updateActivePlan(plan, completedCandles, timeframeSeconds) {
+  if (!plan || PLAN_TERMINAL_STATUSES.has(plan.status)) return plan;
+
+  const side = plan.direction.toLowerCase();
+  const scenario = plan.analysisSnapshot?.[side];
+  if (!scenario) return plan;
+
+  const nextPlan = { ...plan };
+  const newCandles = completedCandles.filter(
+    (candle) => candle.epoch > Number(plan.lastEvaluatedEpoch || plan.referenceCandleEpoch)
+  );
+
+  for (const candle of newCandles) {
+    // A stop-loss touch ends the original plan, even if the candle later closes back inside the zone.
+    const stopHit = plan.direction === "BUY"
+      ? candle.low <= Number(plan.originalStopLoss)
+      : candle.high >= Number(plan.originalStopLoss);
+
+    const targetHit = plan.direction === "BUY"
+      ? candle.high >= Number(plan.originalTakeProfit)
+      : candle.low <= Number(plan.originalTakeProfit);
+
+    if (stopHit) {
+      nextPlan.status = "INVALIDATED";
+      nextPlan.statusMessage = `The original ${plan.direction} stop-loss level was reached. This setup is no longer active; run a fresh analysis to map a new plan.`;
+      nextPlan.lastEvaluatedEpoch = candle.epoch;
+      break;
+    }
+
+    if (targetHit) {
+      nextPlan.status = "TARGET REACHED";
+      nextPlan.statusMessage = "The original target was reached. This plan is complete; run a fresh analysis if you want to map another setup.";
+      nextPlan.lastEvaluatedEpoch = candle.epoch;
+      break;
+    }
+
+    const touchedZone =
+      candle.low <= Number(scenario.watchHigh) &&
+      candle.high >= Number(scenario.watchLow);
+
+    if (touchedZone) {
+      nextPlan.zoneTouched = true;
+      nextPlan.zoneTouchEpoch = candle.epoch;
+    }
+
+    const candleIsBullish = candle.close > candle.open;
+    const candleIsBearish = candle.close < candle.open;
+    const candleIndex = completedCandles.findIndex((item) => item.epoch === candle.epoch);
+    const previous = candleIndex > 0 ? completedCandles[candleIndex - 1] : null;
+    const movedWithDirection = previous
+      ? plan.direction === "BUY"
+        ? candle.close > previous.close
+        : candle.close < previous.close
+      : false;
+    const recentZoneTouch =
+      nextPlan.zoneTouched &&
+      Number.isFinite(Number(nextPlan.zoneTouchEpoch)) &&
+      candle.epoch - Number(nextPlan.zoneTouchEpoch) <= timeframeSeconds * 2;
+    const confirmed = recentZoneTouch && movedWithDirection &&
+      (plan.direction === "BUY" ? candleIsBullish : candleIsBearish);
+
+    if (nextPlan.status !== "CONFIRMATION DETECTED" && confirmed) {
+      nextPlan.status = "CONFIRMATION DETECTED";
+      nextPlan.statusMessage = `A completed candle has touched the original zone and closed in the ${plan.direction === "BUY" ? "bullish" : "bearish"} direction. This is a research signal only; NOX has not placed an order.`;
+    } else if (nextPlan.status !== "CONFIRMATION DETECTED" && nextPlan.zoneTouched) {
+      nextPlan.status = "WAITING FOR CONFIRMATION";
+      nextPlan.statusMessage = `Price has reached the original ${plan.direction} zone. Keep the original levels and wait for a completed ${plan.direction === "BUY" ? "bullish" : "bearish"} candle to confirm; a touch alone is not an entry signal.`;
+    }
+
+    nextPlan.lastEvaluatedEpoch = candle.epoch;
+  }
+
+  if (nextPlan.status === "WAITING FOR ZONE") {
+    nextPlan.statusMessage = `The original ${plan.direction} plan is still active. Price has not reached its watch zone yet; entry, stop-loss and target remain locked.`;
+  }
+
+  return nextPlan;
+}
+
+function presentActivePlan(plan) {
+  const snapshot = plan.analysisSnapshot;
+  const displayAction = plan.status === "CONFIRMATION DETECTED"
+    ? `${plan.direction} NOW`
+    : plan.status === "INVALIDATED" || plan.status === "TARGET REACHED"
+      ? plan.status
+      : plan.status;
+
+  return {
+    ...snapshot,
+    action: plan.direction,
+    planDirection: plan.direction,
+    planStatus: plan.status,
+    displayAction,
+    statusMessage: plan.statusMessage,
+    buy: plan.direction === "BUY" ? snapshot.buy : null,
+    sell: plan.direction === "SELL" ? snapshot.sell : null,
+    planCreatedAt: plan.createdAt,
+  };
 }
 
 function CandleChart({ candles }) {
@@ -869,7 +1038,7 @@ export default function App() {
             .slice(0, 100);
 
           throw new Error(
-            `Expected JSON from ${endpoint} but received HTML or another content type. Check your backend URL. Response: ${bodyPreview}`
+            `Expected JSON from ${endpoint} but received HTML or another content type. Check your backend URL and deployment. Response: ${bodyPreview}`
           );
         }
 
@@ -889,15 +1058,12 @@ export default function App() {
           const exchangeSymbol = String(
             coin.exchangeSymbol || coin.id || coin.symbol || ""
           ).toUpperCase();
-
           const rawBaseAsset = String(
             coin.baseAsset || coin.symbol || exchangeSymbol
           ).toUpperCase();
-
           const baseAsset = rawBaseAsset.endsWith("USDT")
             ? rawBaseAsset.slice(0, -4)
             : rawBaseAsset;
-
           const displayName = coin.name || baseAsset;
 
           return {
@@ -976,8 +1142,6 @@ export default function App() {
 
     setLoading(true);
     setError("");
-    setAnalysis(null);
-    setCandles([]);
 
     let client = null;
 
@@ -1046,7 +1210,39 @@ export default function App() {
       }
 
       setCandles(data);
-      setAnalysis(enforceMinimumRewardRisk(analyzeCandles(data)));
+
+      // Use completed candles only. An in-progress candle must not confirm or invalidate a plan.
+      const completedCandles = getCompletedCandles(data, timeframe);
+      if (completedCandles.length < 5) {
+        throw new Error("There are not enough completed candles yet to analyze this timeframe.");
+      }
+
+      const storageKey = getPlanStorageKey(market, timeframe);
+      const savedPlan = readSavedPlan(storageKey);
+      const savedPlanIsUsable = savedPlan &&
+        savedPlan.marketKey === storageKey &&
+        !PLAN_TERMINAL_STATUSES.has(savedPlan.status) &&
+        ["BUY", "SELL"].includes(savedPlan.direction);
+
+      if (savedPlanIsUsable) {
+        // Keep the original setup and its levels; only advance its lifecycle from new closed candles.
+        const updatedPlan = updateActivePlan(savedPlan, completedCandles, timeframe);
+        savePlan(storageKey, updatedPlan);
+        setAnalysis(presentActivePlan(updatedPlan));
+      } else {
+        const freshAnalysis = enforceMinimumRewardRisk(analyzeCandles(completedCandles));
+        const side = freshAnalysis.action.toLowerCase();
+        const hasDirectionalSetup = ["BUY", "SELL"].includes(freshAnalysis.action) && Boolean(freshAnalysis[side]);
+
+        if (hasDirectionalSetup) {
+          const newPlan = createActivePlan(freshAnalysis, storageKey, completedCandles);
+          savePlan(storageKey, newPlan);
+          setAnalysis(presentActivePlan(newPlan));
+        } else {
+          removeSavedPlan(storageKey);
+          setAnalysis(freshAnalysis);
+        }
+      }
 
       setConnection(
         isCrypto(market)
@@ -1101,7 +1297,6 @@ export default function App() {
           { id: "news", label: "News", detail: "Events & catalysts" },
         ].map((item) => {
           const active = mode === item.id;
-
           return (
             <button
               key={item.id}
@@ -1129,17 +1324,8 @@ export default function App() {
                 font: "inherit",
               }}
             >
-              <span style={{ display: "block", fontWeight: 650 }}>
-                {item.label}
-              </span>
-              <span
-                style={{
-                  display: "block",
-                  fontSize: "11px",
-                  marginTop: "3px",
-                  opacity: 0.75,
-                }}
-              >
+              <span style={{ display: "block", fontWeight: 650 }}>{item.label}</span>
+              <span style={{ display: "block", fontSize: "11px", marginTop: "3px", opacity: 0.75 }}>
                 {item.detail}
               </span>
             </button>
@@ -1149,249 +1335,241 @@ export default function App() {
 
       {mode === "technical" ? (
         <>
-          <section className="search-section">
-            <div className="section-heading">
+      <section className="search-section">
+        <div className="section-heading">
+          <div>
+            <h2>Select a market</h2>
+            <p>Inspect recent price behaviour and map a conditional setup.</p>
+          </div>
+        </div>
+
+        <form className="market-form" onSubmit={runAnalysis}>
+          <div className="search-box">
+            <span className="search-icon" aria-hidden="true">⌕</span>
+            <input
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setMarket(null);
+                setSuggestionsOpen(true);
+                setAnalysis(null);
+                setCandles([]);
+                setError("");
+              }}
+              onFocus={() => setSuggestionsOpen(true)}
+              placeholder="Search synthetic indices, forex, metals or crypto…"
+              aria-label="Search markets"
+              autoComplete="off"
+            />
+
+            {market && (
+              <button
+                className="clear-selection"
+                type="button"
+                onClick={() => {
+                  setMarket(null);
+                  setSearch("");
+                  setAnalysis(null);
+                  setCandles([]);
+                  setError("");
+                  setSuggestionsOpen(true);
+                }}
+                aria-label="Clear market"
+              >
+                ×
+              </button>
+            )}
+          </div>
+
+          {suggestionsOpen && (
+            <div className="market-suggestions">
+              {filteredMarkets.slice(0, 10).map((item) => (
+                <button
+                  type="button"
+                  className="suggestion"
+                  key={`${item.provider}-${item.symbol}`}
+                  onClick={() => chooseMarket(item)}
+                >
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{item.category} · {item.symbol}</small>
+                  </span>
+                  <span className="suggestion-arrow">↗</span>
+                </button>
+              ))}
+
+              {!filteredMarkets.length && (
+                <div className="empty-suggestions">
+                  No matching markets. {cryptoStatus}
+                </div>
+              )}
+            </div>
+          )}
+
+          {market && (
+            <div className="selected-market">
+              <span className="status-dot" />
+              <span>
+                Selected: <strong>{market.label}</strong>
+              </span>
+            </div>
+          )}
+
+          <label className="timeframe-label">
+            Candle timeframe
+          </label>
+
+          <TimeframeDropdown
+            value={timeframe}
+            options={TIMEFRAMES}
+            onChange={chooseTimeframe}
+          />
+
+          {error && <p className="form-error">{error}</p>}
+
+          <button className="analyze-button" type="submit" disabled={loading}>
+            <span>{loading ? "ANALYZING MARKET…" : "ANALYZE MARKET"}</span>
+            <span aria-hidden="true">↗</span>
+          </button>
+        </form>
+
+        <p className="search-note">
+          Research mode · No live orders enabled · Signals are not financial advice
+        </p>
+
+        <p className="connection-status">
+          <span
+            className={
+              connection.includes("Data received") ||
+              connection.includes("Connected")
+                ? "status-dot"
+                : "status-dot muted"
+            }
+          />
+          {connection}
+        </p>
+
+        <p className="crypto-status">{cryptoStatus}</p>
+      </section>
+
+      {loading && (
+        <section className="analysis-loader">
+          <div className="loader-orbit">
+            <img className="loader-logo" src="/Nox.png" alt="" />
+          </div>
+          <h2>Reading market data</h2>
+          <p className="loader-description">{providerDescription}</p>
+        </section>
+      )}
+
+      {candles.length > 0 && !loading && (
+        <section className="chart-section">
+          <div className="section-heading">
+            <div>
+              <h2>Price action</h2>
+              <p>
+                {market?.label} · {TIMEFRAMES.find((tf) => tf.value === timeframe)?.label}
+              </p>
+            </div>
+            <span className="chart-live-tag">HISTORICAL DATA</span>
+          </div>
+
+          <CandleChart candles={candles} />
+        </section>
+      )}
+
+      {analysis && !loading && (
+        <section className="report-section">
+          <div className="report-header">
+            <div>
+              <p className="eyebrow">MARKET REPORT</p>
+              <h2>What price is showing</h2>
+            </div>
+            <span className={`action-badge ${analysis.planStatus === "CONFIRMATION DETECTED" ? analysis.planDirection.toLowerCase() : analysis.planStatus ? "wait" : analysis.action.toLowerCase()}`}>
+              {analysis.displayAction || analysis.action}
+            </span>
+          </div>
+
+          <div className="analysis-paragraphs">
+            {analysis.paragraphs.map((paragraph, index) => (
+              <p className="analysis-paragraph" key={index}>
+                {renderTextWithPrices(paragraph)}
+              </p>
+            ))}
+          </div>
+
+          <div className="signal-card">
+            <div className="signal-card-top">
               <div>
-                <h2>Select a market</h2>
-                <p>
-                  Inspect recent price behaviour and map a conditional setup.
-                </p>
+                <span className="field-label">ACTION</span>
+                <h3>{analysis.displayAction || analysis.action}</h3>
+              </div>
+
+              <div className="setup-type">
+                <span className="field-label">SETUP TYPE</span>
+                <strong>{analysis.setupType}</strong>
               </div>
             </div>
 
-            <form className="market-form" onSubmit={runAnalysis}>
-              <div className="search-box">
-                <span className="search-icon" aria-hidden="true">
-                  ⌕
-                </span>
-                <input
-                  value={search}
-                  onChange={(event) => {
-                    setSearch(event.target.value);
-                    setMarket(null);
-                    setSuggestionsOpen(true);
-                    setAnalysis(null);
-                    setCandles([]);
-                    setError("");
-                  }}
-                  onFocus={() => setSuggestionsOpen(true)}
-                  placeholder="Search synthetic indices, forex, metals or crypto…"
-                  aria-label="Search markets"
-                  autoComplete="off"
+            {(analysis.action === "WAIT" || analysis.planDirection) && (
+              <div className="wait-message">
+                <h4>{analysis.planDirection ? "PLAN STATUS" : "WHAT TO WAIT FOR"}</h4>
+                <p>{analysis.statusMessage || analysis.waitFor}</p>
+              </div>
+            )}
+
+            {analysis.planDirection ? (
+              <div className="scenario-grid scenario-grid-single">
+                <ScenarioCard
+                  side={analysis.planDirection}
+                  scenario={analysis[analysis.planDirection.toLowerCase()]}
                 />
-
-                {market && (
-                  <button
-                    className="clear-selection"
-                    type="button"
-                    onClick={() => {
-                      setMarket(null);
-                      setSearch("");
-                      setAnalysis(null);
-                      setCandles([]);
-                      setError("");
-                      setSuggestionsOpen(true);
-                    }}
-                    aria-label="Clear market"
-                  >
-                    ×
-                  </button>
-                )}
               </div>
-
-              {suggestionsOpen && (
-                <div className="market-suggestions">
-                  {filteredMarkets.slice(0, 10).map((item) => (
-                    <button
-                      type="button"
-                      className="suggestion"
-                      key={`${item.provider}-${item.symbol}`}
-                      onClick={() => chooseMarket(item)}
-                    >
-                      <span>
-                        <strong>{item.label}</strong>
-                        <small>
-                          {item.category} · {item.symbol}
-                        </small>
-                      </span>
-                      <span className="suggestion-arrow">↗</span>
-                    </button>
-                  ))}
-
-                  {!filteredMarkets.length && (
-                    <div className="empty-suggestions">
-                      No matching markets. {cryptoStatus}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {market && (
-                <div className="selected-market">
-                  <span className="status-dot" />
-                  <span>
-                    Selected: <strong>{market.label}</strong>
-                  </span>
-                </div>
-              )}
-
-              <label className="timeframe-label">Candle timeframe</label>
-
-              <TimeframeDropdown
-                value={timeframe}
-                options={TIMEFRAMES}
-                onChange={chooseTimeframe}
-              />
-
-              {error && <p className="form-error">{error}</p>}
-
-              <button
-                className="analyze-button"
-                type="submit"
-                disabled={loading}
-              >
-                <span>
-                  {loading ? "ANALYZING MARKET…" : "ANALYZE MARKET"}
-                </span>
-                <span aria-hidden="true">↗</span>
-              </button>
-            </form>
-
-            <p className="search-note">
-              Research mode · No live orders enabled · Signals are not financial
-              advice
-            </p>
-
-            <p className="connection-status">
-              <span
-                className={
-                  connection.includes("Data received") ||
-                  connection.includes("Connected")
-                    ? "status-dot"
-                    : "status-dot muted"
-                }
-              />
-              {connection}
-            </p>
-
-            <p className="crypto-status">{cryptoStatus}</p>
-          </section>
-
-          {loading && (
-            <section className="analysis-loader">
-              <div className="loader-orbit">
-                <img className="loader-logo" src="/Nox.png" alt="" />
+            ) : analysis.action === "WAIT" ? (
+              <div className="scenario-grid">
+                <ScenarioCard side="BUY" scenario={analysis.buy} />
+                <ScenarioCard side="SELL" scenario={analysis.sell} />
               </div>
-              <h2>Reading market data</h2>
-              <p className="loader-description">{providerDescription}</p>
-            </section>
-          )}
-
-          {candles.length > 0 && !loading && (
-            <section className="chart-section">
-              <div className="section-heading">
-                <div>
-                  <h2>Price action</h2>
-                  <p>
-                    {market?.label} ·{" "}
-                    {TIMEFRAMES.find((tf) => tf.value === timeframe)?.label}
-                  </p>
-                </div>
-                <span className="chart-live-tag">HISTORICAL DATA</span>
+            ) : (
+              <div className="scenario-grid scenario-grid-single">
+                <ScenarioCard
+                  side={analysis.action}
+                  scenario={analysis.action === "BUY" ? analysis.buy : analysis.sell}
+                />
               </div>
+            )}
 
-              <CandleChart candles={candles} />
-            </section>
-          )}
+            <div className="report-detail">
+              <h4>WHAT INVALIDATES THE IDEA</h4>
+              <p>{analysis.invalidates}</p>
+            </div>
 
-          {analysis && !loading && (
-            <section className="report-section">
-              <div className="report-header">
-                <div>
-                  <p className="eyebrow">MARKET REPORT</p>
-                  <h2>What price is showing</h2>
-                </div>
-                <span className={`action-badge ${analysis.action.toLowerCase()}`}>
-                  {analysis.action}
-                </span>
-              </div>
+            <div className="report-detail">
+              <h4>WHAT TO DO NEXT</h4>
+              <p>{analysis.next}</p>
+            </div>
+          </div>
 
-              <div className="analysis-paragraphs">
-                {analysis.paragraphs.map((paragraph, index) => (
-                  <p className="analysis-paragraph" key={index}>
-                    {renderTextWithPrices(paragraph)}
-                  </p>
-                ))}
-              </div>
+          <div className="market-stats">
+            <PriceStat label="RECENT HIGH" value={analysis.recentHigh} />
+            <PriceStat label="RECENT LOW" value={analysis.recentLow} />
+            <div className="price-stat">
+              <span className="price-stat-label">MARKET CONDITION</span>
+              <strong>{analysis.marketCondition}</strong>
+            </div>
+          </div>
 
-              <div className="signal-card">
-                <div className="signal-card-top">
-                  <div>
-                    <span className="field-label">ACTION</span>
-                    <h3>{analysis.action}</h3>
-                  </div>
+          <p className="method-note">
+            Recent swing high/low use the highest high and lowest low among the
+            latest 20 returned candles. Stop-loss levels are set at these
+            structural extremes. Retracement zones are heuristic estimates,
+            not verified institutional order blocks. Entry, stop and target
+            levels are not guaranteed outcomes. Confirm the setup and risk on
+            the chart before considering any trade.
+          </p>
+        </section>
+      )}
 
-                  <div className="setup-type">
-                    <span className="field-label">SETUP TYPE</span>
-                    <strong>{analysis.setupType}</strong>
-                  </div>
-                </div>
-
-                {analysis.action === "WAIT" && (
-                  <div className="wait-message">
-                    <h4>WHAT TO WAIT FOR</h4>
-                    <p>{analysis.waitFor}</p>
-                  </div>
-                )}
-
-                {analysis.action === "WAIT" ? (
-                  <div className="scenario-grid">
-                    <ScenarioCard side="BUY" scenario={analysis.buy} />
-                    <ScenarioCard side="SELL" scenario={analysis.sell} />
-                  </div>
-                ) : (
-                  <div className="scenario-grid scenario-grid-single">
-                    <ScenarioCard
-                      side={analysis.action}
-                      scenario={
-                        analysis.action === "BUY"
-                          ? analysis.buy
-                          : analysis.sell
-                      }
-                    />
-                  </div>
-                )}
-
-                <div className="report-detail">
-                  <h4>WHAT INVALIDATES THE IDEA</h4>
-                  <p>{analysis.invalidates}</p>
-                </div>
-
-                <div className="report-detail">
-                  <h4>WHAT TO DO NEXT</h4>
-                  <p>{analysis.next}</p>
-                </div>
-              </div>
-
-              <div className="market-stats">
-                <PriceStat label="RECENT HIGH" value={analysis.recentHigh} />
-                <PriceStat label="RECENT LOW" value={analysis.recentLow} />
-                <div className="price-stat">
-                  <span className="price-stat-label">MARKET CONDITION</span>
-                  <strong>{analysis.marketCondition}</strong>
-                </div>
-              </div>
-
-              <p className="method-note">
-                Recent swing high/low use the highest high and lowest low among
-                the latest 20 returned candles. Stop-loss levels are set at
-                these structural extremes. Retracement zones are heuristic
-                estimates, not verified institutional order blocks. Entry, stop
-                and target levels are not guaranteed outcomes. Confirm the setup
-                and risk on the chart before considering any trade.
-              </p>
-            </section>
-          )}
         </>
       ) : (
         <NewsWorkspace />
