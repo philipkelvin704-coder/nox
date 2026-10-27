@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { connectToDeriv, getCandles, formatCandleTime } from "./deriv";
 import "./App.css";
-import NewsWorkspace from "./News";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
@@ -251,6 +250,203 @@ function selectRetracementZone(zones, direction, currentPrice, pad) {
   return scored[0];
 }
 
+const MAX_MEMORY_CANDLES = 600;
+const MAX_MEMORY_OBSERVATIONS = 30;
+
+function getChartMemoryKey(market, timeframe) {
+  const provider = isCrypto(market) ? "binance" : "deriv";
+  const symbol = String(market?.exchangeSymbol || market?.symbol || "").toUpperCase();
+  return `nox.chartMemory.v1:${provider}:${symbol}:${timeframe}`;
+}
+
+function readChartMemory(storageKey) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(storageKey) || "null");
+    return {
+      candles: Array.isArray(saved?.candles) ? saved.candles : [],
+      observations: Array.isArray(saved?.observations) ? saved.observations : [],
+    };
+  } catch {
+    return { candles: [], observations: [] };
+  }
+}
+
+function mergeCandleHistory(previous, incoming) {
+  const byEpoch = new Map();
+  [...(previous || []), ...(incoming || [])].forEach((raw, index) => {
+    const candle = normalizeCandle(raw, index);
+    if (
+      Number.isFinite(candle.epoch) &&
+      [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite)
+    ) {
+      byEpoch.set(candle.epoch, candle);
+    }
+  });
+  return [...byEpoch.values()]
+    .sort((a, b) => a.epoch - b.epoch)
+    .slice(-MAX_MEMORY_CANDLES);
+}
+
+function findSwingPoints(candles) {
+  const highs = [];
+  const lows = [];
+  const start = Math.max(0, candles.length - 100);
+  const sample = candles.slice(start);
+  for (let i = 2; i < sample.length - 2; i += 1) {
+    const candle = sample[i];
+    if (
+      candle.high >= sample[i - 1].high &&
+      candle.high >= sample[i - 2].high &&
+      candle.high > sample[i + 1].high &&
+      candle.high > sample[i + 2].high
+    ) highs.push({ price: candle.high, epoch: candle.epoch });
+    if (
+      candle.low <= sample[i - 1].low &&
+      candle.low <= sample[i - 2].low &&
+      candle.low < sample[i + 1].low &&
+      candle.low < sample[i + 2].low
+    ) lows.push({ price: candle.low, epoch: candle.epoch });
+  }
+  return { highs: highs.slice(-4), lows: lows.slice(-4) };
+}
+
+function buildMarketStory(rawCandles, previousObservation = null) {
+  const candles = (rawCandles || [])
+    .map(normalizeCandle)
+    .filter((c) => Number.isFinite(c.epoch) && [c.open, c.high, c.low, c.close].every(Number.isFinite))
+    .sort((a, b) => a.epoch - b.epoch);
+  if (candles.length < 5) return null;
+
+  const recent = candles.slice(-20);
+  const preceding = candles.slice(-40, -20);
+  const last = candles.at(-1);
+  const previous = candles.at(-2);
+  const longWindow = candles.slice(-Math.min(300, candles.length));
+  const high20 = Math.max(...recent.map((c) => c.high));
+  const low20 = Math.min(...recent.map((c) => c.low));
+  const highLong = Math.max(...longWindow.map((c) => c.high));
+  const lowLong = Math.min(...longWindow.map((c) => c.low));
+  const startPrice = longWindow[0].open || longWindow[0].close;
+  const changePercent = startPrice ? ((last.close - startPrice) / startPrice) * 100 : 0;
+  const mean = (values) => values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+  const recentRanges = recent.slice(-10).map((c) => c.high - c.low);
+  const previousRanges = (preceding.length ? preceding : recent.slice(0, 10)).slice(-10).map((c) => c.high - c.low);
+  const recentRangeMean = mean(recentRanges);
+  const previousRangeMean = mean(previousRanges);
+  const volatilityRatio = previousRangeMean > 0 ? recentRangeMean / previousRangeMean : 1;
+  const rangePosition = high20 > low20 ? ((last.close - low20) / (high20 - low20)) * 100 : 50;
+  const candleRange = Math.max(last.high - last.low, 1e-12);
+  const bodyStrength = Math.abs(last.close - last.open) / candleRange;
+  const closeLocation = ((last.close - last.low) / candleRange) * 100;
+  const swings = findSwingPoints(candles);
+  const lastTwoHighs = swings.highs.slice(-2);
+  const lastTwoLows = swings.lows.slice(-2);
+  let structure = "Mixed swing structure";
+  if (lastTwoHighs.length === 2 && lastTwoLows.length === 2) {
+    const higherHigh = lastTwoHighs[1].price > lastTwoHighs[0].price;
+    const higherLow = lastTwoLows[1].price > lastTwoLows[0].price;
+    const lowerHigh = lastTwoHighs[1].price < lastTwoHighs[0].price;
+    const lowerLow = lastTwoLows[1].price < lastTwoLows[0].price;
+    if (higherHigh && higherLow) structure = "Higher highs and higher lows";
+    else if (lowerHigh && lowerLow) structure = "Lower highs and lower lows";
+  }
+
+  const rangePercent = ((high20 - low20) / Math.max(Math.abs(last.close), 1e-9)) * 100;
+  const nearTop = rangePosition >= 80;
+  const nearBottom = rangePosition <= 20;
+  const volatility = volatilityRatio >= 1.25 ? "Expanding" : volatilityRatio <= 0.8 ? "Contracting" : "Steady";
+  const candleDirection = last.close > last.open ? "Bullish" : last.close < last.open ? "Bearish" : "Neutral";
+  const historicalDirection = changePercent > 0.15 ? "rose" : changePercent < -0.15 ? "fell" : "finished near its starting price";
+  const history = `${longWindow.length} completed candles: price ${historicalDirection}${Math.abs(changePercent) > 0.15 ? ` by ${Math.abs(changePercent).toFixed(2)}%` : ""}. The wider observed range is ${fmt(lowLong)}–${fmt(highLong)}. Recent swing structure: ${structure.toLowerCase()}.`;
+  const current = `Latest completed candle closed at ${fmt(last.close)} (${candleDirection.toLowerCase()}); its body used ${(bodyStrength * 100).toFixed(0)}% of its range and it closed at ${closeLocation.toFixed(0)}% of its own candle range. Price is at ${rangePosition.toFixed(0)}% of the latest 20-candle range${nearTop ? ", near the range high" : nearBottom ? ", near the range low" : ", in the middle portion of the range"}, and short-term volatility is ${volatility.toLowerCase()}.`;
+
+  let changeSinceLastCheck;
+  if (!previousObservation) {
+    changeSinceLastCheck = "This is the first saved observation for this market and timeframe; future checks will be compared with it.";
+  } else if (Number(previousObservation.epoch) === Number(last.epoch)) {
+    changeSinceLastCheck = "No new completed candle has formed since the previous check. Keep the recorded structure and plan context; do not treat a repeated scan as new evidence.";
+  } else {
+    const previousClose = Number(previousObservation.close);
+    const closeDelta = Number.isFinite(previousClose) ? last.close - previousClose : 0;
+    const deltaText = closeDelta === 0
+      ? "the close is unchanged"
+      : `the close moved ${closeDelta > 0 ? "up" : "down"} ${fmt(Math.abs(closeDelta))}`;
+    const structureText = previousObservation.structure && previousObservation.structure !== structure
+      ? `swing structure changed from ${String(previousObservation.structure).toLowerCase()} to ${structure.toLowerCase()}`
+      : `swing structure remains ${structure.toLowerCase()}`;
+    const oldPosition = Number(previousObservation.rangePosition);
+    const positionText = Number.isFinite(oldPosition)
+      ? `; range position shifted from ${oldPosition.toFixed(0)}% to ${rangePosition.toFixed(0)}%`
+      : "";
+    changeSinceLastCheck = `Since the last saved completed candle, ${deltaText}; ${structureText}${positionText}.`;
+  }
+
+  let anticipation;
+  if (structure === "Higher highs and higher lows") {
+    anticipation = [
+      { title: "Continuation condition", detail: `A completed close above ${fmt(high20)} would show renewed upward expansion; a retest that holds would strengthen that path.` },
+      { title: "Pullback / failure condition", detail: `A pullback may test recent support around ${fmt(low20)}. A completed close below ${fmt(low20)} would weaken the bullish structure; do not assume support must hold.` },
+    ];
+  } else if (structure === "Lower highs and lower lows") {
+    anticipation = [
+      { title: "Continuation condition", detail: `A completed close below ${fmt(low20)} would show renewed downward expansion; a failed retest of that level would strengthen that path.` },
+      { title: "Pullback / failure condition", detail: `A rebound may test recent resistance around ${fmt(high20)}. A completed close above ${fmt(high20)} would weaken the bearish structure; do not assume resistance must hold.` },
+    ];
+  } else {
+    anticipation = [
+      { title: "Upside scenario", detail: `A completed close above ${fmt(high20)} followed by a retest that holds would be evidence of an upside break. A wick alone is not enough.` },
+      { title: "Downside scenario", detail: `A completed close below ${fmt(low20)} followed by a retest that fails would be evidence of a downside break. A wick alone is not enough.` },
+    ];
+  }
+
+  let presentBias = "Mixed / awaiting clearer structure";
+  if (structure === "Higher highs and higher lows") presentBias = "Bullish structure; confirmation still required";
+  if (structure === "Lower highs and lower lows") presentBias = "Bearish structure; confirmation still required";
+  if (rangePercent < 0.35) presentBias = "Compressed range; breakout not yet established";
+
+  return {
+    candleCount: candles.length,
+    latestEpoch: last.epoch,
+    latestClose: last.close,
+    history,
+    current,
+    changeSinceLastCheck,
+    structure,
+    presentBias,
+    volatility,
+    rangePosition: Number(rangePosition.toFixed(1)),
+    recentHigh: high20,
+    recentLow: low20,
+    widerHigh: highLong,
+    widerLow: lowLong,
+    anticipation,
+  };
+}
+function recordChartObservation(memory, story) {
+  if (!story) return memory;
+  const observations = Array.isArray(memory.observations) ? [...memory.observations] : [];
+  const last = observations.at(-1);
+  if (Number(last?.epoch) !== Number(story.latestEpoch)) {
+    observations.push({
+      epoch: story.latestEpoch,
+      savedAt: Date.now(),
+      close: story.latestClose,
+      structure: story.structure,
+      presentBias: story.presentBias,
+      volatility: story.volatility,
+      rangePosition: story.rangePosition,
+      history: story.history,
+      current: story.current,
+      changeSinceLastCheck: story.changeSinceLastCheck,
+      recentHigh: story.recentHigh,
+      recentLow: story.recentLow,
+      widerHigh: story.widerHigh,
+      widerLow: story.widerLow,
+    });
+  }
+  return { ...memory, candles: (memory.candles || []).slice(-MAX_MEMORY_CANDLES), observations: observations.slice(-MAX_MEMORY_OBSERVATIONS) };
+}
+
 function analyzeCandles(rawCandles) {
   const candles = (rawCandles || [])
     .map(normalizeCandle)
@@ -297,12 +493,20 @@ function analyzeCandles(rawCandles) {
       0.012 &&
     trendPercent < 0.008;
 
+  // A directional setup needs agreement between broader swing structure and
+  // recent momentum. One isolated candle must not flip the entire analysis.
+  const story = buildMarketStory(candles);
+  const shortMomentum = last.close - (candles.at(-5)?.close ?? firstClose);
   const bullish =
+    story?.structure === "Higher highs and higher lows" &&
     trendChange > 0 &&
+    shortMomentum > 0 &&
     last.close > (previous?.close ?? last.close);
 
   const bearish =
+    story?.structure === "Lower highs and lower lows" &&
     trendChange < 0 &&
+    shortMomentum < 0 &&
     last.close < (previous?.close ?? last.close);
 
   const precision =
@@ -556,7 +760,7 @@ function enforceMinimumRewardRisk(analysis) {
     const risk = Math.abs(entry - stopLoss);
     const reward = Math.abs(takeProfit - entry);
 
-    if (risk > 0 && risk > reward) {
+    if (risk > 0 && reward < risk * 1.5) {
       const direction = side === "buy" ? 1 : -1;
       const precision =
         Math.abs(entry) < 10 ? 5 : Math.abs(entry) < 1000 ? 3 : 2;
@@ -572,7 +776,7 @@ function enforceMinimumRewardRisk(analysis) {
 }
 
 
-const PLAN_TERMINAL_STATUSES = new Set(["INVALIDATED", "TARGET REACHED"]);
+const PLAN_TERMINAL_STATUSES = new Set(["INVALIDATED", "TARGET REACHED", "AMBIGUOUS CANDLE"]);
 
 function getPlanStorageKey(market, timeframe) {
   const provider = isCrypto(market) ? "binance" : "deriv";
@@ -636,6 +840,11 @@ function createActivePlan(analysis, marketKey, completedCandles) {
     originalEntry: analysis[side].entry,
     originalStopLoss: analysis[side].stopLoss,
     originalTakeProfit: analysis[side].takeProfit,
+    events: [{
+      epoch: referenceCandle.epoch,
+      status: "PLAN CREATED",
+      detail: `${direction} plan created with locked entry, stop-loss and target levels.`,
+    }],
   };
 }
 
@@ -661,16 +870,26 @@ function updateActivePlan(plan, completedCandles, timeframeSeconds) {
       ? candle.high >= Number(plan.originalTakeProfit)
       : candle.low <= Number(plan.originalTakeProfit);
 
+    if (stopHit && targetHit) {
+      nextPlan.status = "AMBIGUOUS CANDLE";
+      nextPlan.statusMessage = "This candle's range crossed both the original stop and target. OHLC data cannot show which was reached first, so Nox will not label this outcome as a win or loss.";
+      nextPlan.events = [...(nextPlan.events || []), { epoch: candle.epoch, status: "AMBIGUOUS CANDLE", detail: "Both stop and target were inside one candle's range; order of touches is unknown." }].slice(-12);
+      nextPlan.lastEvaluatedEpoch = candle.epoch;
+      break;
+    }
+
     if (stopHit) {
       nextPlan.status = "INVALIDATED";
-      nextPlan.statusMessage = `The original ${plan.direction} stop-loss level was reached. This setup is no longer active; run a fresh analysis to map a new plan.`;
+      nextPlan.statusMessage = `The original ${plan.direction} stop-loss level was reached. This setup is no longer active; reassess before creating another plan.`;
+      nextPlan.events = [...(nextPlan.events || []), { epoch: candle.epoch, status: "INVALIDATED", detail: `Price reached the original stop-loss at ${fmt(plan.originalStopLoss)}.` }].slice(-12);
       nextPlan.lastEvaluatedEpoch = candle.epoch;
       break;
     }
 
     if (targetHit) {
       nextPlan.status = "TARGET REACHED";
-      nextPlan.statusMessage = "The original target was reached. This plan is complete; run a fresh analysis if you want to map another setup.";
+      nextPlan.statusMessage = "The original target was reached. This plan is complete; reassess before mapping another setup.";
+      nextPlan.events = [...(nextPlan.events || []), { epoch: candle.epoch, status: "TARGET REACHED", detail: `Price reached the original target at ${fmt(plan.originalTakeProfit)}.` }].slice(-12);
       nextPlan.lastEvaluatedEpoch = candle.epoch;
       break;
     }
@@ -680,6 +899,9 @@ function updateActivePlan(plan, completedCandles, timeframeSeconds) {
       candle.high >= Number(scenario.watchLow);
 
     if (touchedZone) {
+      if (!nextPlan.zoneTouched) {
+        nextPlan.events = [...(nextPlan.events || []), { epoch: candle.epoch, status: "ZONE TOUCHED", detail: `Price first entered the original ${plan.direction} watch zone.` }].slice(-12);
+      }
       nextPlan.zoneTouched = true;
       nextPlan.zoneTouchEpoch = candle.epoch;
     }
@@ -702,7 +924,8 @@ function updateActivePlan(plan, completedCandles, timeframeSeconds) {
 
     if (nextPlan.status !== "CONFIRMATION DETECTED" && confirmed) {
       nextPlan.status = "CONFIRMATION DETECTED";
-      nextPlan.statusMessage = `A completed candle has touched the original zone and closed in the ${plan.direction === "BUY" ? "bullish" : "bearish"} direction. This is a research signal only; NOX has not placed an order.`;
+      nextPlan.statusMessage = `A completed candle touched the original zone and closed in the ${plan.direction === "BUY" ? "bullish" : "bearish"} direction. This is a research signal only; NOX has not placed an order.`;
+      nextPlan.events = [...(nextPlan.events || []), { epoch: candle.epoch, status: "CONFIRMATION DETECTED", detail: `A completed ${plan.direction === "BUY" ? "bullish" : "bearish"} candle confirmed the original zone.` }].slice(-12);
     } else if (nextPlan.status !== "CONFIRMATION DETECTED" && nextPlan.zoneTouched) {
       nextPlan.status = "WAITING FOR CONFIRMATION";
       nextPlan.statusMessage = `Price has reached the original ${plan.direction} zone. Keep the original levels and wait for a completed ${plan.direction === "BUY" ? "bullish" : "bearish"} candle to confirm; a touch alone is not an entry signal.`;
@@ -718,7 +941,7 @@ function updateActivePlan(plan, completedCandles, timeframeSeconds) {
   return nextPlan;
 }
 
-function presentActivePlan(plan) {
+function presentActivePlan(plan, marketStory = null, memoryInfo = null) {
   const snapshot = plan.analysisSnapshot;
   const displayAction = plan.status === "CONFIRMATION DETECTED"
     ? `${plan.direction} NOW`
@@ -736,6 +959,9 @@ function presentActivePlan(plan) {
     buy: plan.direction === "BUY" ? snapshot.buy : null,
     sell: plan.direction === "SELL" ? snapshot.sell : null,
     planCreatedAt: plan.createdAt,
+    planEvents: plan.events || [],
+    marketStory,
+    memoryInfo,
   };
 }
 
@@ -1010,7 +1236,6 @@ function ScenarioCard({ side, scenario }) {
 }
 
 export default function App() {
-  const [mode, setMode] = useState("technical");
   const [market, setMarket] = useState(null);
   const [search, setSearch] = useState("");
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -1159,7 +1384,7 @@ export default function App() {
           ).toUpperCase(),
           timeframe:
             TIMEFRAMES.find((tf) => tf.value === timeframe)?.apiValue || "15m",
-          limit: "120",
+          limit: "300",
         });
 
         const response = await fetch(
@@ -1193,7 +1418,7 @@ export default function App() {
         setConnection("Connecting to Deriv market data…");
 
         client = await connectToDeriv();
-        data = await getCandles(client, market.symbol, timeframe, 120);
+        data = await getCandles(client, market.symbol, timeframe, 300);
 
         if (!data?.length) {
           throw new Error(
@@ -1209,35 +1434,58 @@ export default function App() {
         throw new Error("The selected market returned no usable candles.");
       }
 
-      setCandles(data);
-
-      // Use completed candles only. An in-progress candle must not confirm or invalidate a plan.
-      const completedCandles = getCompletedCandles(data, timeframe);
-      if (completedCandles.length < 5) {
+      // Merge the newest completed candles with browser memory. Repeated analysis
+      // must add context, not discard the chart's previously observed history.
+      const storageKey = getPlanStorageKey(market, timeframe);
+      const memoryKey = getChartMemoryKey(market, timeframe);
+      const oldMemory = readChartMemory(memoryKey);
+      const completedFetched = getCompletedCandles(data, timeframe);
+      const mergedCandles = mergeCandleHistory(oldMemory.candles, completedFetched);
+      if (mergedCandles.length < 5) {
         throw new Error("There are not enough completed candles yet to analyze this timeframe.");
       }
 
-      const storageKey = getPlanStorageKey(market, timeframe);
+      const marketStory = buildMarketStory(mergedCandles, oldMemory.observations.at(-1) || null);
+      const updatedMemory = recordChartObservation(
+        { candles: mergedCandles, observations: oldMemory.observations },
+        marketStory
+      );
+      try {
+        window.localStorage.setItem(memoryKey, JSON.stringify(updatedMemory));
+      } catch {
+        // Analysis still works when browser storage is disabled or full.
+      }
+      const memoryInfo = {
+        candleCount: mergedCandles.length,
+        observationCount: updatedMemory.observations.length,
+        observations: updatedMemory.observations.slice(-6).reverse(),
+      };
+      setCandles(mergedCandles);
+
       const savedPlan = readSavedPlan(storageKey);
       const savedPlanIsUsable = savedPlan &&
         savedPlan.marketKey === storageKey &&
-        !PLAN_TERMINAL_STATUSES.has(savedPlan.status) &&
         ["BUY", "SELL"].includes(savedPlan.direction);
 
       if (savedPlanIsUsable) {
-        // Keep the original setup and its levels; only advance its lifecycle from new closed candles.
-        const updatedPlan = updateActivePlan(savedPlan, completedCandles, timeframe);
+        // Keep the original setup and levels. Terminal outcomes remain visible
+        // until the user deliberately starts a fresh analysis.
+        const updatedPlan = PLAN_TERMINAL_STATUSES.has(savedPlan.status)
+          ? savedPlan
+          : updateActivePlan(savedPlan, mergedCandles, timeframe);
         savePlan(storageKey, updatedPlan);
-        setAnalysis(presentActivePlan(updatedPlan));
+        setAnalysis(presentActivePlan(updatedPlan, marketStory, memoryInfo));
       } else {
-        const freshAnalysis = enforceMinimumRewardRisk(analyzeCandles(completedCandles));
+        const freshAnalysis = enforceMinimumRewardRisk(analyzeCandles(mergedCandles));
+        freshAnalysis.marketStory = marketStory;
+        freshAnalysis.memoryInfo = memoryInfo;
         const side = freshAnalysis.action.toLowerCase();
         const hasDirectionalSetup = ["BUY", "SELL"].includes(freshAnalysis.action) && Boolean(freshAnalysis[side]);
 
         if (hasDirectionalSetup) {
-          const newPlan = createActivePlan(freshAnalysis, storageKey, completedCandles);
+          const newPlan = createActivePlan(freshAnalysis, storageKey, mergedCandles);
           savePlan(storageKey, newPlan);
-          setAnalysis(presentActivePlan(newPlan));
+          setAnalysis(presentActivePlan(newPlan, marketStory, memoryInfo));
         } else {
           removeSavedPlan(storageKey);
           setAnalysis(freshAnalysis);
@@ -1278,63 +1526,6 @@ export default function App() {
         <p className="eyebrow">MARKET INTELLIGENCE · RESEARCH MODE</p>
       </header>
 
-      <nav
-        aria-label="Analysis mode"
-        style={{
-          display: "flex",
-          gap: "10px",
-          justifyContent: "center",
-          margin: "0 auto 28px",
-          width: "min(100% - 32px, 720px)",
-          padding: "6px",
-          border: "1px solid rgba(255,255,255,0.09)",
-          borderRadius: "14px",
-          background: "rgba(255,255,255,0.025)",
-        }}
-      >
-        {[
-          { id: "technical", label: "Technical", detail: "Price action" },
-          { id: "news", label: "News", detail: "Events & catalysts" },
-        ].map((item) => {
-          const active = mode === item.id;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setMode(item.id)}
-              aria-pressed={active}
-              style={{
-                flex: 1,
-                minWidth: 0,
-                border: active
-                  ? item.id === "technical"
-                    ? "1px solid rgba(170,0,0,0.65)"
-                    : "1px solid rgba(49,201,154,0.55)"
-                  : "1px solid transparent",
-                borderRadius: "10px",
-                padding: "12px 14px",
-                color: active ? "#f4f7f6" : "#929b98",
-                background: active
-                  ? item.id === "technical"
-                    ? "rgba(170,0,0,0.14)"
-                    : "rgba(49,201,154,0.10)"
-                  : "transparent",
-                cursor: "pointer",
-                textAlign: "left",
-                font: "inherit",
-              }}
-            >
-              <span style={{ display: "block", fontWeight: 650 }}>{item.label}</span>
-              <span style={{ display: "block", fontSize: "11px", marginTop: "3px", opacity: 0.75 }}>
-                {item.detail}
-              </span>
-            </button>
-          );
-        })}
-      </nav>
-
-      {mode === "technical" ? (
-        <>
       <section className="search-section">
         <div className="section-heading">
           <div>
@@ -1471,10 +1662,96 @@ export default function App() {
                 {market?.label} · {TIMEFRAMES.find((tf) => tf.value === timeframe)?.label}
               </p>
             </div>
-            <span className="chart-live-tag">HISTORICAL DATA</span>
+            <span className="chart-live-tag">LOCAL + LIVE HISTORY</span>
           </div>
 
           <CandleChart candles={candles} />
+        </section>
+      )}
+
+      {analysis?.marketStory && !loading && (
+        <section className="market-story-section">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">CONTEXT · MEMORY · SCENARIOS</p>
+              <h2>Market story</h2>
+              <p>What price did, what it is doing now, and what would confirm the next path.</p>
+            </div>
+            <span className="chart-live-tag">{analysis.marketStory.candleCount} BARS REMEMBERED</span>
+          </div>
+
+          <div className="market-story-grid">
+            <article className="market-story-card">
+              <span className="field-label">WHAT HAPPENED</span>
+              <p>{analysis.marketStory.history}</p>
+              <small>Wider high/low: {fmt(analysis.marketStory.widerHigh)} / {fmt(analysis.marketStory.widerLow)}</small>
+            </article>
+            <article className="market-story-card">
+              <span className="field-label">WHAT IS HAPPENING</span>
+              <strong>{analysis.marketStory.presentBias}</strong>
+              <p>{analysis.marketStory.current}</p>
+              <small>Recent structure: {analysis.marketStory.structure}</small>
+              <p className="market-story-change">{analysis.marketStory.changeSinceLastCheck}</p>
+            </article>
+            <article className="market-story-card anticipation-card">
+              <span className="field-label">WHAT COULD HAPPEN NEXT</span>
+              {analysis.marketStory.anticipation.map((scenario) => (
+                <div className="anticipation-item" key={scenario.title}>
+                  <strong>{scenario.title}</strong>
+                  <p>{scenario.detail}</p>
+                </div>
+              ))}
+              <small>Conditional scenarios, not certainty or probability estimates.</small>
+            </article>
+          </div>
+
+          <div className="memory-panel">
+            <div className="memory-panel-heading">
+              <div>
+                <span className="field-label">NOX CHART MEMORY</span>
+                <p>Saved locally in this browser for this market and timeframe.</p>
+              </div>
+              <span className="memory-count">{analysis.memoryInfo?.observationCount || 0} observations</span>
+            </div>
+            {analysis.planEvents?.length > 0 && (
+              <div className="memory-events">
+                <h4>ACTIVE PLAN TIMELINE</h4>
+                {analysis.planEvents.slice(-5).reverse().map((event, index) => (
+                  <div className="memory-event" key={`${event.epoch}-${event.status}-${index}`}>
+                    <span>{event.status}</span>
+                    <p>{event.detail}</p>
+                    <small>{formatCandleTime(event.epoch)}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+            {analysis.memoryInfo?.observations?.length > 0 && (
+              <div className="memory-events">
+                <h4>RECENT MARKET OBSERVATIONS</h4>
+                {analysis.memoryInfo.observations.slice(0, 4).map((observation) => (
+                  <div className="memory-event" key={observation.epoch}>
+                    <span>{observation.structure}</span>
+                    <p>Close {fmt(observation.close)} · {observation.presentBias} · volatility {observation.volatility.toLowerCase()} · range position {observation.rangePosition}%</p>
+                    <small>{formatCandleTime(observation.epoch)}</small>
+                  </div>
+                ))}
+              </div>
+            )}
+            {analysis.planDirection && (
+              <button
+                className="memory-reset-button"
+                type="button"
+                onClick={() => {
+                  removeSavedPlan(getPlanStorageKey(market, timeframe));
+                  setAnalysis(null);
+                  runAnalysis();
+                }}
+                disabled={loading}
+              >
+                REASSESS MARKET &amp; CREATE A NEW PLAN
+              </button>
+            )}
+          </div>
         </section>
       )}
 
@@ -1560,19 +1837,15 @@ export default function App() {
           </div>
 
           <p className="method-note">
-            Recent swing high/low use the highest high and lowest low among the
-            latest 20 returned candles. Stop-loss levels are set at these
-            structural extremes. Retracement zones are heuristic estimates,
-            not verified institutional order blocks. Entry, stop and target
-            levels are not guaranteed outcomes. Confirm the setup and risk on
-            the chart before considering any trade.
+            Nox stores up to 600 completed candles per market/timeframe in this
+            browser and requests up to 300 fresh candles when available. Memory
+            is local to this browser and is not shared across devices. Swing
+            zones and structure labels are rule-based estimates, not verified
+            institutional order blocks. Anticipations are conditional scenarios,
+            not guaranteed predictions. If one candle spans both stop and target,
+            OHLC history cannot reveal which was reached first.
           </p>
         </section>
-      )}
-
-        </>
-      ) : (
-        <NewsWorkspace />
       )}
 
       <footer className="site-footer">
