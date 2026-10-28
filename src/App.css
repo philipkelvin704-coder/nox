@@ -1292,6 +1292,3 @@ input:focus-visible {
 }
 .sr-zone-edge.resistance { stroke: #e34f60; }
 .sr-zone-edge.support { stroke: #31c99a; }
-.trendline-readout { margin-top: 12px; padding: 11px 12px; border: 1px solid #292020; border-radius: 8px; background: #0b0b0b; }
-.trendline-readout strong { display: block; color: #f0d4a5; font-size: 11px; letter-spacing: .04em; }
-.trendline-readout p { margin: 6px 0 0 !important; color: #b6b6b6 !important; font-size: 12px; line-height: 1.55; }
