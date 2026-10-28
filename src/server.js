@@ -27,6 +27,8 @@ const TIMEFRAMES = {
   "1M": { twelve: "1month", alpha: "monthly", binance: "1M" },
 };
 
+// ------------------------------ Status ------------------------------
+
 app.get("/api/status", (_req, res) => {
   res.json({
     app: "NOX TRADE",
@@ -40,6 +42,8 @@ app.get("/api/status", (_req, res) => {
     },
   });
 });
+
+// ------------------------------ Helpers ------------------------------
 
 function normalizeTimeframe(value) {
   const input = String(value || "15m").trim();
@@ -64,7 +68,11 @@ function normalizeTimeframe(value) {
 function normalizeSymbol(value) {
   const symbol = String(value || "").trim();
 
-  if (!symbol || symbol.length > 80 || !/^[A-Za-z0-9/_-]+$/.test(symbol)) {
+  if (
+    !symbol ||
+    symbol.length > 80 ||
+    !/^[A-Za-z0-9/_-]+$/.test(symbol)
+  ) {
     throw new Error("Invalid market symbol.");
   }
 
@@ -100,7 +108,9 @@ async function fetchJson(url, options = {}) {
       data?.msg ||
       JSON.stringify(data).slice(0, 250);
 
-    throw new Error(`Provider request failed (${response.status}): ${message}`);
+    throw new Error(
+      `Provider request failed (${response.status}): ${message}`
+    );
   }
 
   return data;
@@ -118,19 +128,17 @@ function normalizeTwelveData(data) {
   }
 
   return data.values
-    .map((candle) => ({
+    .map((c) => ({
       time: new Date(
-        candle.datetime.replace(" ", "T") + "Z"
+        c.datetime.replace(" ", "T") + "Z"
       ).toISOString(),
-      open: Number(candle.open),
-      high: Number(candle.high),
-      low: Number(candle.low),
-      close: Number(candle.close),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
     }))
-    .filter((candle) =>
-      [candle.open, candle.high, candle.low, candle.close].every(
-        Number.isFinite
-      )
+    .filter((c) =>
+      [c.open, c.high, c.low, c.close].every(Number.isFinite)
     )
     .reverse();
 }
@@ -149,6 +157,7 @@ async function getTwelveDataCandles(symbol, timeframe, limit) {
   }
 
   const url = new URL("https://api.twelvedata.com/time_series");
+
   url.searchParams.set("symbol", symbol.replace("-", "/"));
   url.searchParams.set("interval", interval);
   url.searchParams.set("outputsize", String(limit));
@@ -174,19 +183,17 @@ function normalizeAlphaVantage(data) {
   }
 
   return Object.entries(data[seriesKey])
-    .map(([time, candle]) => ({
+    .map(([time, c]) => ({
       time: time.includes(" ")
         ? time.replace(" ", "T") + "Z"
         : time + "T00:00:00Z",
-      open: Number(candle["1. open"]),
-      high: Number(candle["2. high"]),
-      low: Number(candle["3. low"]),
-      close: Number(candle["4. close"]),
+      open: Number(c["1. open"]),
+      high: Number(c["2. high"]),
+      low: Number(c["3. low"]),
+      close: Number(c["4. close"]),
     }))
-    .filter((candle) =>
-      [candle.open, candle.high, candle.low, candle.close].every(
-        Number.isFinite
-      )
+    .filter((c) =>
+      [c.open, c.high, c.low, c.close].every(Number.isFinite)
     )
     .sort((a, b) => Date.parse(a.time) - Date.parse(b.time));
 }
@@ -213,6 +220,7 @@ async function getAlphaVantageCandles(symbol, timeframe, limit) {
   }
 
   const url = new URL("https://www.alphavantage.co/query");
+
   url.searchParams.set("from_symbol", pair.slice(0, 3));
   url.searchParams.set("to_symbol", pair.slice(3, 6));
   url.searchParams.set("apikey", process.env.ALPHA_VANTAGE_API_KEY);
@@ -222,7 +230,10 @@ async function getAlphaVantageCandles(symbol, timeframe, limit) {
   } else {
     url.searchParams.set("function", "FX_INTRADAY");
     url.searchParams.set("interval", interval);
-    url.searchParams.set("outputsize", limit > 100 ? "full" : "compact");
+    url.searchParams.set(
+      "outputsize",
+      limit > 100 ? "full" : "compact"
+    );
   }
 
   return normalizeAlphaVantage(await fetchJson(url)).slice(-limit);
@@ -235,19 +246,13 @@ function normalizeBinance(rows) {
     throw new Error("Binance returned an unexpected candle response.");
   }
 
-  return rows
-    .map((candle) => ({
-      time: new Date(Number(candle[0])).toISOString(),
-      open: Number(candle[1]),
-      high: Number(candle[2]),
-      low: Number(candle[3]),
-      close: Number(candle[4]),
-    }))
-    .filter((candle) =>
-      [candle.open, candle.high, candle.low, candle.close].every(
-        Number.isFinite
-      )
-    );
+  return rows.map((c) => ({
+    time: new Date(Number(c[0])).toISOString(),
+    open: Number(c[1]),
+    high: Number(c[2]),
+    low: Number(c[3]),
+    close: Number(c[4]),
+  }));
 }
 
 async function getBinanceCandles(symbol, timeframe, limit) {
@@ -263,7 +268,9 @@ async function getBinanceCandles(symbol, timeframe, limit) {
   const data = await fetchJson(url);
 
   if (!Array.isArray(data)) {
-    throw new Error(data.msg || "Binance could not return these candles.");
+    throw new Error(
+      data.msg || "Binance could not return these candles."
+    );
   }
 
   return normalizeBinance(data);
@@ -278,8 +285,13 @@ app.get("/api/binance/markets", async (_req, res) => {
       fetchJson(`${BINANCE_BASE_URL}/api/v3/ticker/24hr`),
     ]);
 
-    if (!Array.isArray(exchangeInfo.symbols) || !Array.isArray(tickerData)) {
-      throw new Error("Binance returned an unexpected market-list format.");
+    if (
+      !Array.isArray(exchangeInfo.symbols) ||
+      !Array.isArray(tickerData)
+    ) {
+      throw new Error(
+        "Binance returned an unexpected market-list format."
+      );
     }
 
     const prices = new Map(
@@ -323,10 +335,15 @@ app.get("/api/binance/markets", async (_req, res) => {
       markets,
     });
   } catch (error) {
-    console.error("Binance market-list request failed:", error.message);
+    console.error(
+      "Binance market-list request failed:",
+      error.message
+    );
 
     res.status(502).json({
-      error: error.message || "Unable to retrieve Binance crypto markets.",
+      error:
+        error.message ||
+        "Unable to retrieve Binance crypto markets.",
       markets: [],
     });
   }
@@ -383,10 +400,11 @@ app.get("/api/candles", async (req, res) => {
   }
 });
 
-// Return JSON for unknown API routes.
-app.use("/api", (_req, res) =>
-  res.status(404).json({ error: "API route not found." })
-);
+// ------------------------------ Unknown API routes ------------------------------
+
+app.use("/api", (_req, res) => {
+  res.status(404).json({ error: "API route not found." });
+});
 
 app.listen(PORT, () => {
   console.log(`NOX TRADE backend running at http://localhost:${PORT}`);

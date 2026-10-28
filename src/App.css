@@ -1,4 +1,3 @@
-
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600;700&family=Montserrat:wght@600;700&display=swap');
 :root {
   font-family: 'DM Sans', sans-serif;
@@ -1273,3 +1272,26 @@ input:focus-visible {
   border-top: 1px solid #202020;
   color: #d2b7b7 !important;
 }
+
+
+.market-stats {
+  grid-template-columns: repeat(auto-fit, minmax(135px, 1fr));
+}
+@media (max-width: 620px) {
+  .market-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Full-width support/resistance zones. SVG order keeps these behind candles. */
+.sr-zone { pointer-events: none; }
+.sr-zone-edge {
+  fill: none;
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  opacity: .82;
+  vector-effect: non-scaling-stroke;
+}
+.sr-zone-edge.resistance { stroke: #e34f60; }
+.sr-zone-edge.support { stroke: #31c99a; }
+.trendline-readout { margin-top: 12px; padding: 11px 12px; border: 1px solid #292020; border-radius: 8px; background: #0b0b0b; }
+.trendline-readout strong { display: block; color: #f0d4a5; font-size: 11px; letter-spacing: .04em; }
+.trendline-readout p { margin: 6px 0 0 !important; color: #b6b6b6 !important; font-size: 12px; line-height: 1.55; }
