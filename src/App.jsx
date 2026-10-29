@@ -1018,9 +1018,9 @@ function CandleChart({ candles }) {
       >
         <defs>
           <linearGradient id="resistanceZoneFill" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#a72a36" stopOpacity="0.10" />
-            <stop offset="55%" stopColor="#e34f60" stopOpacity="0.19" />
-            <stop offset="100%" stopColor="#a72a36" stopOpacity="0.10" />
+            <stop offset="0%" stopColor="#aa0000" stopOpacity="0.10" />
+            <stop offset="55%" stopColor="#aa0000" stopOpacity="0.19" />
+            <stop offset="100%" stopColor="#aa0000" stopOpacity="0.10" />
           </linearGradient>
           <linearGradient id="supportZoneFill" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stopColor="#008f83" stopOpacity="0.10" />
@@ -1215,46 +1215,60 @@ function ScenarioCard({ side, scenario }) {
 
   return (
     <article className={`scenario-card ${buy ? "scenario-buy" : "scenario-sell"}`}>
-      <div className="scenario-heading">
-        <span className={`signal-pill ${buy ? "buy-pill" : "sell-pill"}`}>
-          {side}
-        </span>
-        <span>{buy ? "If price breaks upward" : "If price breaks downward"}</span>
-      </div>
-
-      <div className="scenario-watch">
-        <p>WATCH RETRACEMENT ZONE</p>
-        <div className="scenario-watch-prices">
-          <CopyPrice value={watchLow} />
-          {hasRange && (
-            <>
-              <span className="scenario-watch-separator">–</span>
-              <CopyPrice value={watchHigh} />
-            </>
-          )}
+      <header className="scenario-heading">
+        <div className="scenario-heading-main">
+          <span className={`signal-pill ${buy ? "buy-pill" : "sell-pill"}`}>
+            {buy ? "↗ BUY" : "↘ SELL"}
+          </span>
+          <div className="scenario-heading-copy">
+            <strong>{buy ? "Bullish breakout" : "Bearish breakdown"}</strong>
+            <span>{buy ? "If price breaks upward" : "If price breaks downward"}</span>
+          </div>
         </div>
-        <p className="scenario-zone-type">
-          {scenario.zoneType || "Potential price area"}
+      </header>
+
+      <section className="scenario-watch">
+        <div className="scenario-watch-label">
+          <p>WATCH RETRACEMENT ZONE</p>
+        </div>
+        <div className="scenario-watch-panel">
+          <div className="scenario-watch-prices">
+            <CopyPrice value={watchLow} size="scenario-zone-price" />
+            {hasRange && (
+              <>
+                <span className="scenario-watch-separator">–</span>
+                <CopyPrice value={watchHigh} size="scenario-zone-price" />
+              </>
+            )}
+          </div>
+          <p className="scenario-zone-type">
+            {scenario.zoneType || "Potential price area"}
+          </p>
+        </div>
+        <p className="scenario-watch-hint">
+          Wait for price to retest {buy ? "from above" : "from below"} before considering entry.
         </p>
-        <p>
-          Wait for a retest {buy ? "from above" : "from below"} and confirmation.
-        </p>
-      </div>
+      </section>
 
       <div className="risk-grid">
-        <PriceStat label="POTENTIAL SL" value={scenario.stopLoss} />
-        <PriceStat label="POTENTIAL TP" value={scenario.takeProfit} />
+        <PriceStat label="POTENTIAL STOP LOSS" value={scenario.stopLoss} />
+        <PriceStat label="POTENTIAL TAKE PROFIT" value={scenario.takeProfit} />
       </div>
 
-      <div className="scenario-copy">
-        <h4>CONFIRMATION</h4>
+      <section className="scenario-confirmation">
+        <div className="scenario-detail-heading">
+          <h4>CONFIRMATION CHECKLIST</h4>
+        </div>
         <p>{scenario.confirmation}</p>
-      </div>
+      </section>
 
-      <div className="scenario-copy">
-        <h4>IF INVALIDATED</h4>
+      <details className="scenario-invalidation">
+        <summary>
+          <span>IF INVALIDATED</span>
+          <span className="scenario-details-toggle" aria-hidden="true">＋</span>
+        </summary>
         <p>{scenario.invalidation}</p>
-      </div>
+      </details>
     </article>
   );
 }
@@ -1690,92 +1704,6 @@ export default function App() {
           </div>
 
           <CandleChart candles={candles} />
-        </section>
-      )}
-
-      {analysis?.marketStory && !loading && (
-        <section className="market-story-section">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">CONTEXT · MEMORY · SCENARIOS</p>
-              <h2>Market story</h2>
-              <p>What price did, what it is doing now, and what would confirm the next path.</p>
-            </div>
-            <span className="chart-live-tag">{analysis.marketStory.candleCount} BARS REMEMBERED</span>
-          </div>
-
-          <div className="market-story-grid">
-            <article className="market-story-card">
-              <span className="field-label">WHAT HAPPENED</span>
-              <p>{analysis.marketStory.history}</p>
-              <small>Wider high/low: {fmt(analysis.marketStory.widerHigh)} / {fmt(analysis.marketStory.widerLow)}</small>
-            </article>
-            <article className="market-story-card">
-              <span className="field-label">WHAT IS HAPPENING</span>
-              <strong>{analysis.marketStory.presentBias}</strong>
-              <p>{analysis.marketStory.current}</p>
-              <small>Recent structure: {analysis.marketStory.structure}</small>
-              <p className="market-story-change">{analysis.marketStory.changeSinceLastCheck}</p>
-            </article>
-            <article className="market-story-card anticipation-card">
-              <span className="field-label">WHAT COULD HAPPEN NEXT</span>
-              {analysis.marketStory.anticipation.map((scenario) => (
-                <div className="anticipation-item" key={scenario.title}>
-                  <strong>{scenario.title}</strong>
-                  <p>{scenario.detail}</p>
-                </div>
-              ))}
-              <small>Conditional scenarios, not certainty or probability estimates.</small>
-            </article>
-          </div>
-
-          <div className="memory-panel">
-            <div className="memory-panel-heading">
-              <div>
-                <span className="field-label">NOX CHART MEMORY</span>
-                <p>Saved locally in this browser for this market and timeframe.</p>
-              </div>
-              <span className="memory-count">{analysis.memoryInfo?.observationCount || 0} observations</span>
-            </div>
-            {analysis.planEvents?.length > 0 && (
-              <div className="memory-events">
-                <h4>ACTIVE PLAN TIMELINE</h4>
-                {analysis.planEvents.slice(-5).reverse().map((event, index) => (
-                  <div className="memory-event" key={`${event.epoch}-${event.status}-${index}`}>
-                    <span>{event.status}</span>
-                    <p>{event.detail}</p>
-                    <small>{formatCandleTime(event.epoch)}</small>
-                  </div>
-                ))}
-              </div>
-            )}
-            {analysis.memoryInfo?.observations?.length > 0 && (
-              <div className="memory-events">
-                <h4>RECENT MARKET OBSERVATIONS</h4>
-                {analysis.memoryInfo.observations.slice(0, 4).map((observation) => (
-                  <div className="memory-event" key={observation.epoch}>
-                    <span>{observation.structure}</span>
-                    <p>Close {fmt(observation.close)} · {observation.presentBias} · volatility {observation.volatility.toLowerCase()} · range position {observation.rangePosition}%</p>
-                    <small>{formatCandleTime(observation.epoch)}</small>
-                  </div>
-                ))}
-              </div>
-            )}
-            {analysis.planDirection && (
-              <button
-                className="memory-reset-button"
-                type="button"
-                onClick={() => {
-                  removeSavedPlan(getPlanStorageKey(market, timeframe));
-                  setAnalysis(null);
-                  runAnalysis();
-                }}
-                disabled={loading}
-              >
-                REASSESS MARKET &amp; CREATE A NEW PLAN
-              </button>
-            )}
-          </div>
         </section>
       )}
 
