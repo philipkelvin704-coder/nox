@@ -76,6 +76,23 @@ async function copyPrice(value) {
   }
 }
 
+async function copyText(value) {
+  const text = String(value ?? "");
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    document.execCommand("copy");
+    field.remove();
+  }
+}
+
 function CopyPrice({ value, size = "" }) {
   const displayValue = fmt(value);
 
@@ -123,130 +140,50 @@ function normalizeCandle(candle, index = 0) {
 }
 
 /*
- * Find possible swing support, swing resistance, supply and demand areas.
- * These are heuristic candidates, not verified institutional order blocks.
+ * Support and resistance retain the original swing-candle logic: resistance
+ * uses the swing high and candle body; support uses the swing low and body.
+ * One unified set of horizontal support and resistance swing areas.
  */
-function findRetracementZones(candles, avgBody, pad) {
+function findSupportResistanceLevels(candles, avgBody, pad, lookback = 180) {
   const zones = [];
-  const start = Math.max(0, candles.length - 45);
+  const start = Math.max(0, candles.length - lookback);
   const recent = candles.slice(start);
-
-  const addZone = (zone) => {
-    if (
-      Number.isFinite(zone.low) &&
-      Number.isFinite(zone.high) &&
-      zone.high > zone.low
-    ) {
-      zones.push(zone);
-    }
-  };
-
   for (let i = 2; i < recent.length - 2; i += 1) {
     const candle = recent[i];
-    const before = recent[i - 1];
-    const after = recent[i + 1];
-    const absoluteIndex = start + i;
-
-    const isSwingHigh =
-      candle.high >= recent[i - 1].high &&
+    const isSwingHigh = candle.high >= recent[i - 1].high &&
       candle.high >= recent[i - 2].high &&
       candle.high >= recent[i + 1].high &&
       candle.high >= recent[i + 2].high;
-
-    const isSwingLow =
-      candle.low <= recent[i - 1].low &&
+    const isSwingLow = candle.low <= recent[i - 1].low &&
       candle.low <= recent[i - 2].low &&
       candle.low <= recent[i + 1].low &&
       candle.low <= recent[i + 2].low;
-
-    if (isSwingHigh) {
-      addZone({
-        type: "Resistance",
-        low: Math.min(candle.open, candle.close),
-        high: candle.high,
-        index: absoluteIndex,
-        source: "swing",
-      });
-    }
-
-    if (isSwingLow) {
-      addZone({
-        type: "Support",
-        low: candle.low,
-        high: Math.max(candle.open, candle.close),
-        index: absoluteIndex,
-        source: "swing",
-      });
-    }
-
-    const bearishDisplacement =
-      after.close < after.open &&
-      before.close < before.open &&
-      Math.abs(after.close - after.open) >= avgBody * 1.15;
-
-    if (candle.close > candle.open && bearishDisplacement) {
-      addZone({
-        type: "Supply / bearish order-block candidate",
-        low: Math.min(candle.open, candle.close),
-        high: candle.high,
-        index: absoluteIndex,
-        source: "orderblock",
-      });
-    }
-
-    const bullishDisplacement =
-      after.close > after.open &&
-      before.close > before.open &&
-      Math.abs(after.close - after.open) >= avgBody * 1.15;
-
-    if (candle.close < candle.open && bullishDisplacement) {
-      addZone({
-        type: "Demand / bullish order-block candidate",
-        low: candle.low,
-        high: Math.max(candle.open, candle.close),
-        index: absoluteIndex,
-        source: "orderblock",
-      });
-    }
+    if (isSwingHigh) zones.push({
+      type: "Resistance", low: Math.min(candle.open, candle.close),
+      high: candle.high, index: start + i, source: "swing",
+    });
+    if (isSwingLow) zones.push({
+      type: "Support", low: candle.low,
+      high: Math.max(candle.open, candle.close), index: start + i, source: "swing",
+    });
   }
-
-  return zones
-    .map((zone) => ({
-      ...zone,
-      width: zone.high - zone.low,
-      age: candles.length - 1 - zone.index,
-    }))
-    .filter((zone) => zone.width <= Math.max(pad * 8, avgBody * 5));
+  return zones.map((zone) => ({
+    ...zone, width: zone.high - zone.low,
+    age: candles.length - 1 - zone.index,
+  })).filter((zone) => zone.width <= Math.max(pad * 8, avgBody * 5));
 }
 
-function selectRetracementZone(zones, direction, currentPrice, pad) {
-  const candidates = zones.filter((zone) => {
-    if (direction === "SELL") {
-      return zone.high > currentPrice + pad * 0.1;
-    }
-
-    return zone.low < currentPrice - pad * 0.1;
-  });
-
+function selectPriceLevel(zones, direction, currentPrice, pad) {
+  const candidates = zones.filter((zone) => direction === "SELL"
+    ? zone.type === "Resistance" && zone.high > currentPrice + pad * 0.1
+    : zone.type === "Support" && zone.low < currentPrice - pad * 0.1);
   if (!candidates.length) return null;
-
-  const scored = candidates.map((zone) => {
-    const distance =
-      direction === "SELL"
-        ? Math.max(0, zone.low - currentPrice)
-        : Math.max(0, currentPrice - zone.high);
-
-    const sourceBonus = zone.source === "orderblock" ? pad * 0.25 : 0;
-    const agePenalty = zone.age * pad * 0.002;
-    return {
-      ...zone,
-      score: distance - sourceBonus + agePenalty,
-    };
-  });
-
-  scored.sort((a, b) => a.score - b.score);
-
-  return scored[0];
+  return candidates.map((zone) => {
+    const distance = direction === "SELL"
+      ? Math.max(0, zone.low - currentPrice)
+      : Math.max(0, currentPrice - zone.high);
+    return { ...zone, price: (zone.low + zone.high) / 2, score: distance + zone.age * pad * 0.002 };
+  }).sort((a, b) => a.score - b.score)[0];
 }
 
 const MAX_MEMORY_CANDLES = 600;
@@ -421,6 +358,7 @@ function buildMarketStory(rawCandles, previousObservation = null) {
     anticipation,
   };
 }
+
 function recordChartObservation(memory, story) {
   if (!story) return memory;
   const observations = Array.isArray(memory.observations) ? [...memory.observations] : [];
@@ -446,6 +384,142 @@ function recordChartObservation(memory, story) {
   return { ...memory, candles: (memory.candles || []).slice(-MAX_MEMORY_CANDLES), observations: observations.slice(-MAX_MEMORY_OBSERVATIONS) };
 }
 
+/* Major swing structure is derived from confirmed swing highs and lows. */
+function detectStructureTrend(candles, lookback = 120) {
+  const sample = candles.slice(-lookback);
+  const highs = [];
+  const lows = [];
+
+  for (let i = 2; i < sample.length - 2; i += 1) {
+    const c = sample[i];
+    if (
+      c.high >= sample[i - 1].high &&
+      c.high >= sample[i - 2].high &&
+      c.high > sample[i + 1].high &&
+      c.high > sample[i + 2].high
+    ) highs.push({ price: c.high, index: i, epoch: c.epoch });
+
+    if (
+      c.low <= sample[i - 1].low &&
+      c.low <= sample[i - 2].low &&
+      c.low < sample[i + 1].low &&
+      c.low < sample[i + 2].low
+    ) lows.push({ price: c.low, index: i, epoch: c.epoch });
+  }
+
+  const lastHighs = highs.slice(-2);
+  const lastLows = lows.slice(-2);
+  let direction = "NEUTRAL";
+  let description = "No confirmed directional swing sequence";
+
+  if (lastHighs.length === 2 && lastLows.length === 2) {
+    const higherHigh = lastHighs[1].price > lastHighs[0].price;
+    const higherLow = lastLows[1].price > lastLows[0].price;
+    const lowerHigh = lastHighs[1].price < lastHighs[0].price;
+    const lowerLow = lastLows[1].price < lastLows[0].price;
+    if (higherHigh && higherLow) {
+      direction = "BULLISH";
+      description = "Higher highs and higher lows";
+    } else if (lowerHigh && lowerLow) {
+      direction = "BEARISH";
+      description = "Lower highs and lower lows";
+    }
+  }
+
+  return {
+    direction,
+    description,
+    highs,
+    lows,
+    swingHigh: lastHighs.at(-1)?.price ?? null,
+    swingLow: lastLows.at(-1)?.price ?? null,
+  };
+}
+
+function buildSwingTrendLines(trend, scope, tolerance = 0) {
+  const lines = [];
+  const choosePair = (points, direction) => {
+    let best = null;
+    for (let i = 0; i < points.length - 1; i += 1) {
+      for (let j = i + 1; j < points.length; j += 1) {
+        const first = points[i];
+        const second = points[j];
+        if (second.index - first.index < 4) continue;
+        const validSlope = direction === "BULLISH"
+          ? second.price > first.price
+          : second.price < first.price;
+        if (!validSlope) continue;
+
+        const slope = (second.price - first.price) / (second.index - first.index);
+        let violated = false;
+        let touches = 0;
+        for (let k = i + 1; k < j; k += 1) {
+          const point = points[k];
+          const projected = first.price + slope * (point.index - first.index);
+          if (direction === "BULLISH" && point.price < projected - tolerance) violated = true;
+          if (direction === "BEARISH" && point.price > projected + tolerance) violated = true;
+          if (Math.abs(point.price - projected) <= Math.max(tolerance, Math.abs(projected) * 0.00015)) touches += 1;
+        }
+        if (violated) continue;
+        const score = (second.index * 1000) + ((second.index - first.index) * 2) + touches;
+        if (!best || score > best.score) best = { first, second, score };
+      }
+    }
+    return best;
+  };
+
+  const rising = choosePair(trend?.lows || [], "BULLISH");
+  if (rising) {
+    lines.push({
+      id: `${scope}-bullish-trendline`, scope, direction: "BULLISH",
+      kind: "RISING SUPPORT", color: "#008f83",
+      first: { ...rising.first }, second: { ...rising.second },
+    });
+  }
+
+  const falling = choosePair(trend?.highs || [], "BEARISH");
+  if (falling) {
+    lines.push({
+      id: `${scope}-bearish-trendline`, scope, direction: "BEARISH",
+      kind: "FALLING RESISTANCE", color: "#aa0000",
+      first: { ...falling.first }, second: { ...falling.second },
+    });
+  }
+  return lines;
+}
+
+function projectTrendLinePrice(line, epoch) {
+  const firstEpoch = Number(line?.first?.epoch);
+  const secondEpoch = Number(line?.second?.epoch);
+  if (!Number.isFinite(firstEpoch) || !Number.isFinite(secondEpoch) || secondEpoch === firstEpoch) return null;
+  const slope = (line.second.price - line.first.price) / (secondEpoch - firstEpoch);
+  const projected = line.first.price + slope * (Number(epoch) - firstEpoch);
+  return Number.isFinite(projected) ? projected : null;
+}
+
+function selectTrendLineReference(lines, direction, currentPrice, epoch, pad) {
+  const expectedDirection = direction === "BUY" ? "BULLISH" : "BEARISH";
+  const candidates = (lines || [])
+    .filter((line) => line.direction === expectedDirection)
+    .map((line) => ({ ...line, projectedPrice: projectTrendLinePrice(line, epoch) }))
+    .filter((line) => Number.isFinite(line.projectedPrice))
+    .filter((line) => direction === "BUY"
+      ? line.projectedPrice < currentPrice
+      : line.projectedPrice > currentPrice)
+    .sort((a, b) => Math.abs(a.projectedPrice - currentPrice) - Math.abs(b.projectedPrice - currentPrice));
+
+  const selected = candidates[0];
+  if (!selected) return null;
+  return {
+    ...selected,
+    price: selected.projectedPrice,
+    low: selected.projectedPrice - pad * 0.35,
+    high: selected.projectedPrice + pad * 0.35,
+    distance: Math.abs(selected.projectedPrice - currentPrice),
+    label: `Major ${selected.kind.toLowerCase()}`,
+  };
+}
+
 function analyzeCandles(rawCandles) {
   const candles = (rawCandles || [])
     .map(normalizeCandle)
@@ -463,7 +537,6 @@ function analyzeCandles(rawCandles) {
   const last = candles.at(-1);
   const previous = candles.at(-2);
 
-  // The structural stop levels are based on these recent swing extremes.
   const swingHigh = Math.max(...recent.map((c) => c.high));
   const swingLow = Math.min(...recent.map((c) => c.low));
 
@@ -487,26 +560,35 @@ function analyzeCandles(rawCandles) {
     candleBodies.reduce((a, b) => a + b, 0) /
     Math.max(candleBodies.length, 1);
 
-  const isConsolidating =
-    (swingHigh - swingLow) / Math.max(Math.abs(last.close), 1e-9) <
-      0.012 &&
-    trendPercent < 0.008;
+  const pad = Math.max(
+    avgBody * 1.2,
+    range * 0.08,
+    Math.abs(last.close) * 0.0005
+  );
 
-  // A directional setup needs agreement between broader swing structure and
-  // recent momentum. One isolated candle must not flip the entire analysis.
   const story = buildMarketStory(candles);
-  const shortMomentum = last.close - (candles.at(-5)?.close ?? firstClose);
-  const bullish =
-    story?.structure === "Higher highs and higher lows" &&
-    trendChange > 0 &&
-    shortMomentum > 0 &&
-    last.close > (previous?.close ?? last.close);
+  const majorTrend = detectStructureTrend(candles, 180);
+  const detectedMajorTrendLines = buildSwingTrendLines(majorTrend, "MAJOR", pad * 0.2);
 
-  const bearish =
-    story?.structure === "Lower highs and lower lows" &&
-    trendChange < 0 &&
-    shortMomentum < 0 &&
-    last.close < (previous?.close ?? last.close);
+  const trendLines = detectedMajorTrendLines.filter((line) =>
+    majorTrend.direction === "BULLISH"
+      ? line.direction === "BULLISH"
+      : majorTrend.direction === "BEARISH"
+        ? line.direction === "BEARISH"
+        : false
+  ).slice(0, 1);
+
+  const shortMomentum = last.close - (candles.at(-5)?.close ?? firstClose);
+
+  const bullishStructure =
+    majorTrend.direction === "BULLISH" &&
+    Number.isFinite(majorTrend.swingLow) &&
+    last.close > majorTrend.swingLow;
+
+  const bearishStructure =
+    majorTrend.direction === "BEARISH" &&
+    Number.isFinite(majorTrend.swingHigh) &&
+    last.close < majorTrend.swingHigh;
 
   const precision =
     Math.abs(last.close) < 10
@@ -517,27 +599,60 @@ function analyzeCandles(rawCandles) {
 
   const level = (n) => Number(n.toFixed(precision));
 
-  const pad = Math.max(
-    avgBody * 1.2,
-    range * 0.08,
-    Math.abs(last.close) * 0.0005
-  );
-
   const targetDistance = Math.max(range * 0.45, pad * 1.5);
-  const zones = findRetracementZones(candles, avgBody, pad);
+  const priceLevels = findSupportResistanceLevels(candles, avgBody, pad, 180);
+  const support = selectPriceLevel(priceLevels, "BUY", last.close, pad);
+  const resistance = selectPriceLevel(priceLevels, "SELL", last.close, pad);
+  const bullishTrendLine = selectTrendLineReference(trendLines, "BUY", last.close, last.epoch, pad);
+  const bearishTrendLine = selectTrendLineReference(trendLines, "SELL", last.close, last.epoch, pad);
+  const bullish = bullishStructure && Boolean(bullishTrendLine);
+  const bearish = bearishStructure && Boolean(bearishTrendLine);
+
+  const isConsolidating =
+    !bullish &&
+    !bearish &&
+    (swingHigh - swingLow) / Math.max(Math.abs(last.close), 1e-9) < 0.012 &&
+    trendPercent < 0.008;
+
+  const chartLevels = [
+    support && { id: "support", label: "SUPPORT", type: "support", low: level(support.low), high: level(support.high), price: level(support.price) },
+    resistance && { id: "resistance", label: "RESISTANCE", type: "resistance", low: level(resistance.low), high: level(resistance.high), price: level(resistance.price) },
+  ].filter(Boolean);
+
+  const trendContext = {
+    major: majorTrend.direction,
+    majorDescription: majorTrend.description,
+    trendLineReading: trendLines.map((line) => ({
+      label: line.kind === "RISING SUPPORT" ? "MAJOR RISING SUPPORT" : "MAJOR FALLING RESISTANCE",
+      projectedPrice: projectTrendLinePrice(line, last.epoch),
+    })),
+    majorSwingPoints: { highs: majorTrend.highs, lows: majorTrend.lows },
+    trendLines: trendLines.map((line) => ({
+      ...line,
+      projectedPrice: projectTrendLinePrice(line, last.epoch),
+      first: { ...line.first, price: level(line.first.price) },
+      second: { ...line.second, price: level(line.second.price) },
+    })),
+    bullishTrendLine: bullishTrendLine ? { scope: bullishTrendLine.scope, kind: bullishTrendLine.kind, price: level(bullishTrendLine.price), low: level(bullishTrendLine.low), high: level(bullishTrendLine.high), label: bullishTrendLine.label } : null,
+    bearishTrendLine: bearishTrendLine ? { scope: bearishTrendLine.scope, kind: bearishTrendLine.kind, price: level(bearishTrendLine.price), low: level(bearishTrendLine.low), high: level(bearishTrendLine.high), label: bearishTrendLine.label } : null,
+    support: support ? { price: level(support.price), low: level(support.low), high: level(support.high), score: support.score, quality: support.quality, touches: support.touches } : null,
+    resistance: resistance ? { price: level(resistance.price), low: level(resistance.low), high: level(resistance.high), score: resistance.score, quality: resistance.quality, touches: resistance.touches } : null,
+  };
 
   if (isConsolidating) {
     return {
       action: "WAIT",
       setupType: "Breakout and retest",
       marketCondition: "Consolidation",
+      chartLevels,
+      trendContext,
       recentHigh: level(swingHigh),
       recentLow: level(swingLow),
       rangeHigh: level(swingHigh),
       rangeLow: level(swingLow),
       paragraphs: [
         `Price has been moving sideways between ${fmt(level(swingLow))} and ${fmt(level(swingHigh))}. Neither side has clearly taken control, so entering in the middle of this range would mean guessing.`,
-        "Wait for a candle to close outside the range, then see whether price returns to test that boundary and holds. A breakout that immediately falls back into the range is not confirmation.",
+        `INTERPRET: ${trendLines.length ? "Major swing trend-line references are available for the current structure." : "No valid major trend line is confirmed from the available swing points."} Support and resistance remain horizontal swing references.`,
       ],
       waitFor:
         "Wait for a candle close outside the range, then a retest that holds. A bullish candle after an upper retest supports a buy idea; a bearish candle after a lower retest supports a sell idea.",
@@ -573,118 +688,70 @@ function analyzeCandles(rawCandles) {
   }
 
   if (bullish) {
-    const selectedZone = selectRetracementZone(
-      zones.filter((zone) =>
-        ["Support", "Demand / bullish order-block candidate"].includes(
-          zone.type
-        )
-      ),
-      "BUY",
-      last.close,
-      pad
-    );
-
-    const watchLow = selectedZone
-      ? level(selectedZone.low)
-      : level(Math.max(swingLow, last.close - pad));
-
-    const watchHigh = selectedZone
-      ? level(selectedZone.high)
-      : level(Math.max(watchLow + pad * 0.25, last.close - pad * 0.25));
-
+    const selectedLevel = bullishTrendLine;
+    const watchLow = selectedLevel ? level(selectedLevel.low) : level(Math.max(swingLow, last.close - pad));
+    const watchHigh = selectedLevel ? level(selectedLevel.high) : level(Math.max(watchLow + pad * 0.25, last.close - pad * 0.25));
     const entry = level((watchLow + watchHigh) / 2);
-    const stop = level(swingLow);
-    const tp = level(Math.max(swingHigh, entry + targetDistance));
-    const zoneType = selectedZone?.type || "Estimated support area";
+    const stop = level(Math.min(swingLow, majorTrend.swingLow ?? swingLow) - pad * 0.12);
+    const opposingResistance = resistance && resistance.price > entry ? resistance : null;
+    const tp = opposingResistance ? level(opposingResistance.price) : level(Math.max(swingHigh, entry + targetDistance));
+    const zoneType = "Major rising swing trend line";
+    const continuationMagnet = tp;
 
     return {
       action: "BUY",
       setupType: "Bullish continuation · wait for pullback",
       marketCondition: "Bullish trend",
-      recentHigh: level(swingHigh),
-      recentLow: level(swingLow),
-      rangeHigh: level(swingHigh),
-      rangeLow: level(swingLow),
+      chartLevels: [...chartLevels, { id: "continuation-target", label: "UPSIDE OBJECTIVE", type: "target-up", price: continuationMagnet }],
+      trendContext: { ...trendContext, continuationMagnet },
+      recentHigh: level(swingHigh), recentLow: level(swingLow), rangeHigh: level(swingHigh), rangeLow: level(swingLow),
       paragraphs: [
-        `Recent candles show buyers pushing price upward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(swingHigh))} and ${fmt(level(swingLow))}.`,
-        `The bullish idea remains conditional. The potential retracement area is ${fmt(watchLow)} to ${fmt(watchHigh)}, based on ${zoneType.toLowerCase()}. Wait for price to return to this area and show bullish rejection; do not chase the current price.`,
+        `SEE: Recent candles show buyers pushing price upward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(swingHigh))} and ${fmt(level(swingLow))}. Major swing structure is ${majorTrend.description.toLowerCase()}.`,
+        `${bullishTrendLine ? "INTERPRET: A valid major rising support trend line is confirmed. " : "INTERPRET: No valid major rising trend line is confirmed from the swing lows. "}The next horizontal resistance reference is ${fmt(continuationMagnet)}.`,
       ],
-      waitFor:
-        `Watch the ${zoneType.toLowerCase()} between ${fmt(watchLow)} and ${fmt(watchHigh)}. Wait for price to retrace into the zone and a bullish confirmation candle to close. If price breaks decisively below the zone, stand aside.`,
+      waitFor: `Watch ${zoneType.toLowerCase()} between ${fmt(watchLow)} and ${fmt(watchHigh)}. Wait for a bullish candle to close after price tests the area. If price closes decisively below support, stand aside.`,
       buy: {
-        entry,
-        watchLow,
-        watchHigh,
-        zoneType,
-        stopLoss: stop,
-        takeProfit: tp,
-        confirmation: "Price retraces into the marked support, demand, or order-block area, holds, and a completed bullish candle closes upward.",
-        invalidation:
-          "Price breaks below the selected retracement zone and recent swing low, then fails to reclaim the area. Cancel the buy idea.",
+        entry, watchLow, watchHigh, zoneType, stopLoss: stop, takeProfit: tp,
+        confirmation: `Price returns to the ${zoneType.toLowerCase()} reference, rejects lower prices, and a completed bullish candle closes upward.`,
+        invalidation: "Price closes decisively below the selected support and fails to reclaim it. Cancel the buy idea.",
       },
       sell: null,
-      invalidates:
-        "A decisive move below the recent swing low weakens or invalidates the bullish structure.",
-      next:
-        "Wait for price to revisit the marked area and confirm bullish rejection. The zone is an area to assess, not an instruction to enter automatically.",
+      invalidates: "A decisive move below the recent structural swing low weakens or invalidates the bullish structure.",
+      next: "Wait for price to revisit support and confirm bullish rejection. Do not enter merely because price touches the level.",
     };
   }
 
   if (bearish) {
-    const selectedZone = selectRetracementZone(
-      zones.filter((zone) =>
-        ["Resistance", "Supply / bearish order-block candidate"].includes(
-          zone.type
-        )
-      ),
-      "SELL",
-      last.close,
-      pad
-    );
-
-    const watchLow = selectedZone
-      ? level(selectedZone.low)
-      : level(Math.min(swingHigh, last.close + pad * 0.25));
-
-    const watchHigh = selectedZone
-      ? level(selectedZone.high)
-      : level(Math.max(watchLow + pad * 0.25, last.close + pad));
-
+    const selectedLevel = bearishTrendLine;
+    const watchLow = selectedLevel ? level(selectedLevel.low) : level(Math.min(swingHigh, last.close + pad * 0.25));
+    const watchHigh = selectedLevel ? level(selectedLevel.high) : level(Math.max(watchLow + pad * 0.25, last.close + pad));
     const entry = level((watchLow + watchHigh) / 2);
-    const stop = level(swingHigh);
-    const tp = level(Math.min(swingLow, entry - targetDistance));
-    const zoneType = selectedZone?.type || "Estimated resistance area";
+    const stop = level(Math.max(swingHigh, majorTrend.swingHigh ?? swingHigh) + pad * 0.12);
+    const opposingSupport = support && support.price < entry ? support : null;
+    const tp = opposingSupport ? level(opposingSupport.price) : level(Math.min(swingLow, entry - targetDistance));
+    const zoneType = "Major falling swing trend line";
+    const continuationMagnet = tp;
 
     return {
       action: "SELL",
       setupType: "Bearish continuation · wait for pullback",
       marketCondition: "Bearish trend",
-      recentHigh: level(swingHigh),
-      recentLow: level(swingLow),
-      rangeHigh: level(swingHigh),
-      rangeLow: level(swingLow),
+      chartLevels: [...chartLevels, { id: "continuation-target", label: "DOWNSIDE OBJECTIVE", type: "target-down", price: continuationMagnet }],
+      trendContext: { ...trendContext, continuationMagnet },
+      recentHigh: level(swingHigh), recentLow: level(swingLow), rangeHigh: level(swingHigh), rangeLow: level(swingLow),
       paragraphs: [
-        `Recent candles show sellers pushing price downward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(swingHigh))} and ${fmt(level(swingLow))}.`,
-        `The bearish idea remains conditional. The potential retracement area is ${fmt(watchLow)} to ${fmt(watchHigh)}, based on ${zoneType.toLowerCase()}. Wait for price to return to this area and show bearish rejection; do not sell simply because price has already fallen.`,
+        `SEE: Recent candles show sellers pushing price downward. The latest close is ${fmt(level(last.close))}, while the recent high and low are ${fmt(level(swingHigh))} and ${fmt(level(swingLow))}. Major swing structure is ${majorTrend.description.toLowerCase()}.`,
+        `${bearishTrendLine ? "INTERPRET: A valid major falling resistance trend line is confirmed. " : "INTERPRET: No valid major falling trend line is confirmed from the swing highs. "}The next horizontal support reference is ${fmt(continuationMagnet)}.`,
       ],
-      waitFor:
-        `Watch the ${zoneType.toLowerCase()} between ${fmt(watchLow)} and ${fmt(watchHigh)}. Wait for price to retrace into the zone and a bearish confirmation candle to close. If price breaks decisively above the zone, stand aside.`,
+      waitFor: `Watch ${zoneType.toLowerCase()} between ${fmt(watchLow)} and ${fmt(watchHigh)}. Wait for a bearish candle to close after price tests the area. If price closes decisively above resistance, stand aside.`,
       buy: null,
       sell: {
-        entry,
-        watchLow,
-        watchHigh,
-        zoneType,
-        stopLoss: stop,
-        takeProfit: tp,
-        confirmation: "Price retraces into the marked resistance, supply, or order-block area, fails to break through, and a completed bearish candle closes downward.",
-        invalidation:
-          "Price breaks above the selected retracement zone and recent swing high, then holds above it. Cancel the sell idea.",
+        entry, watchLow, watchHigh, zoneType, stopLoss: stop, takeProfit: tp,
+        confirmation: `Price returns to the ${zoneType.toLowerCase()} reference, rejects higher prices, and a completed bearish candle closes downward.`,
+        invalidation: "Price closes decisively above the selected resistance and holds above it. Cancel the sell idea.",
       },
-      invalidates:
-        "A decisive move above the recent swing high weakens or invalidates the bearish structure.",
-      next:
-        "Wait for price to revisit the marked area and confirm bearish rejection. The zone is an area to assess, not an instruction to enter automatically.",
+      invalidates: "A decisive move above the recent structural swing high weakens or invalidates the bearish structure.",
+      next: "Wait for price to revisit resistance and confirm bearish rejection. Do not enter merely because price touches the level.",
     };
   }
 
@@ -692,13 +759,15 @@ function analyzeCandles(rawCandles) {
     action: "WAIT",
     setupType: "Wait for structure to clarify",
     marketCondition: "Mixed / unclear",
+    chartLevels,
+    trendContext,
     recentHigh: level(swingHigh),
     recentLow: level(swingLow),
     rangeHigh: level(swingHigh),
     rangeLow: level(swingLow),
     paragraphs: [
-      `Price has not shown a clear directional advantage in the latest candles. The recent high is ${fmt(level(swingHigh))} and the recent low is ${fmt(level(swingLow))}.`,
-      "Wait for a clear close beyond one of these levels and then look for follow-through or a retest. Until then, the next direction is uncertain and an entry would be premature.",
+      `SEE: Price has not shown a clear directional advantage in the latest candles. The recent high is ${fmt(level(swingHigh))} and the recent low is ${fmt(level(swingLow))}. Major swing structure is ${majorTrend.description.toLowerCase()}.`,
+      `INTERPRET: Assess the candle close around horizontal support, resistance and the major trend line. A wick or touch alone does not confirm a break or rejection.`,
     ],
     waitFor:
       "Wait for a candle close above the recent high or below the recent low, then look for a retest and a confirming candle in that direction.",
@@ -732,7 +801,6 @@ function analyzeCandles(rawCandles) {
       "Wait for fresh structure. Do not force a trade in the middle of an unclear market.",
   };
 }
-
 
 /*
  * If a proposed target is closer to entry than the stop is, move the target
@@ -772,13 +840,12 @@ function enforceMinimumRewardRisk(analysis) {
   return adjusted;
 }
 
-
 const PLAN_TERMINAL_STATUSES = new Set(["INVALIDATED", "TARGET REACHED", "AMBIGUOUS CANDLE"]);
 
 function getPlanStorageKey(market, timeframe) {
   const provider = isCrypto(market) ? "binance" : "deriv";
   const symbol = String(market?.exchangeSymbol || market?.symbol || "").toUpperCase();
-  return `nox.activePlan.v1:${provider}:${symbol}:${timeframe}`;
+  return `nox.activePlan.v2:${provider}:${symbol}:${timeframe}`;
 }
 
 function readSavedPlan(storageKey) {
@@ -858,7 +925,6 @@ function updateActivePlan(plan, completedCandles, timeframeSeconds) {
   );
 
   for (const candle of newCandles) {
-    // A stop-loss touch ends the original plan, even if the candle later closes back inside the zone.
     const stopHit = plan.direction === "BUY"
       ? candle.low <= Number(plan.originalStopLoss)
       : candle.high >= Number(plan.originalStopLoss);
@@ -921,7 +987,7 @@ function updateActivePlan(plan, completedCandles, timeframeSeconds) {
 
     if (nextPlan.status !== "CONFIRMATION DETECTED" && confirmed) {
       nextPlan.status = "CONFIRMATION DETECTED";
-      nextPlan.statusMessage = `A completed candle touched the original zone and closed in the ${plan.direction === "BUY" ? "bullish" : "bearish"} direction. This is a research signal only; NOX has not placed an order.`;
+      nextPlan.statusMessage = `A completed candle touched the original zone and closed in the ${plan.direction} direction. This is a research signal only; NOX has not placed an order.`;
       nextPlan.events = [...(nextPlan.events || []), { epoch: candle.epoch, status: "CONFIRMATION DETECTED", detail: `A completed ${plan.direction === "BUY" ? "bullish" : "bearish"} candle confirmed the original zone.` }].slice(-12);
     } else if (nextPlan.status !== "CONFIRMATION DETECTED" && nextPlan.zoneTouched) {
       nextPlan.status = "WAITING FOR CONFIRMATION";
@@ -962,34 +1028,66 @@ function presentActivePlan(plan, marketStory = null, memoryInfo = null) {
   };
 }
 
-function CandleChart({ candles }) {
-  const visible = candles.slice(-70);
+function CandleChart({ candles, analysis }) {
+  const visible = candles.slice(-55);
 
   if (!visible.length) return null;
 
-  const recentVisible = visible.slice(-20);
   const width = 820;
-  const height = 290;
+  const height = 370;
   const left = 8;
   const right = 54;
   const top = 16;
   const bottom = 18;
 
   const values = visible.flatMap((c) => [c.high, c.low]);
-  const max = Math.max(...values);
-  const min = Math.min(...values);
+  const baseMax = Math.max(...values);
+  const baseMin = Math.min(...values);
+  const baseSpan = Math.max(baseMax - baseMin, 1e-9);
+  const suppliedChartLevels = Array.isArray(analysis?.chartLevels) ? analysis.chartLevels : [];
+
+  const chartLevels = suppliedChartLevels.filter((item) =>
+    item.type !== "support" && item.type !== "resistance"
+  );
+
+  const inViewLevels = chartLevels.filter((item) => {
+    const value = Number.isFinite(item.price) ? item.price : (item.low + item.high) / 2;
+    return value >= baseMin - baseSpan * 0.12 && value <= baseMax + baseSpan * 0.12;
+  });
+  const levelValues = inViewLevels.flatMap((item) =>
+    Number.isFinite(item.price) ? [item.price] : [item.low, item.high]
+  );
+  const trendLines = (analysis?.trendContext?.trendLines || []).filter((line) =>
+    [line.first?.price, line.second?.price, line.first?.epoch, line.second?.epoch].every((value) => Number.isFinite(Number(value)))
+  );
+  const firstVisibleEpoch = Number(visible[0]?.epoch);
+  const lastVisibleEpoch = Number(visible.at(-1)?.epoch);
+  const trendScaleValues = trendLines.flatMap((line) => [
+    line.first.price,
+    line.second.price,
+    projectTrendLinePrice(line, firstVisibleEpoch),
+    projectTrendLinePrice(line, lastVisibleEpoch),
+  ]).filter(Number.isFinite);
+  const scaleValues = [...values, ...levelValues, ...trendScaleValues];
+  const max = Math.max(...scaleValues);
+  const min = Math.min(...scaleValues);
   const span = Math.max(max - min, 1e-9);
   const plotHeight = height - top - bottom;
   const plotWidth = width - left - right;
-  const y = (price) => top + ((max - price) / span) * plotHeight;
   const step = plotWidth / visible.length;
-  const bodyWidth = Math.max(2, Math.min(8, step * 0.62));
+  const y = (price) => top + ((max - price) / span) * plotHeight;
 
-  // Build two soft price zones from the recent 20-candle extremes. These are
-  // areas, not exact single-price levels; the zone thickness follows volatility.
-  const averageRange =
-    recentVisible.reduce((sum, candle) => sum + (candle.high - candle.low), 0) /
-    Math.max(1, recentVisible.length);
+  const xForEpoch = (epoch) => {
+    if (!Number.isFinite(Number(epoch)) || !Number.isFinite(firstVisibleEpoch) || !Number.isFinite(lastVisibleEpoch) || lastVisibleEpoch === firstVisibleEpoch) return null;
+    const fraction = (Number(epoch) - firstVisibleEpoch) / (lastVisibleEpoch - firstVisibleEpoch);
+    return left + step / 2 + fraction * (plotWidth - step);
+  };
+
+  const zoneLabelPositions = new Map(inViewLevels.map((item) => [item.id, y((item.low + item.high) / 2)]));
+
+  const bodyWidth = Math.max(2, Math.min(8, step * 0.62));
+  const recentVisible = visible.slice(-20);
+  const averageRange = recentVisible.reduce((sum, candle) => sum + (candle.high - candle.low), 0) / Math.max(1, recentVisible.length);
   const zoneThickness = Math.max(averageRange * 0.42, span * 0.018);
   const resistanceHigh = Math.min(max, Math.max(...recentVisible.map((c) => c.high)));
   const resistanceLow = Math.max(min, resistanceHigh - zoneThickness);
@@ -1000,8 +1098,6 @@ function CandleChart({ candles }) {
     const fraction = index / 4;
     return { price: max - span * fraction, y: top + plotHeight * fraction };
   });
-
-
 
   return (
     <div className="chart-wrap">
@@ -1014,7 +1110,7 @@ function CandleChart({ candles }) {
         className="price-chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
-        aria-label="Historical candlestick chart with full-width support and resistance zones behind the candles"
+        aria-label="Historical candlestick chart with support, resistance and swing-based trend lines"
       >
         <defs>
           <linearGradient id="resistanceZoneFill" x1="0" y1="0" x2="1" y2="0">
@@ -1029,35 +1125,42 @@ function CandleChart({ candles }) {
           </linearGradient>
         </defs>
 
-        {/* Zones are deliberately rendered first so all candles sit above them. */}
         {resistanceHigh > resistanceLow && (
-          <g className="sr-zone resistance-zone">
-            <rect
-              x={left}
-              y={y(resistanceHigh)}
-              width={plotWidth}
-              height={Math.max(2, y(resistanceLow) - y(resistanceHigh))}
-              fill="url(#resistanceZoneFill)"
-            />
-            <line x1={left} x2={left + plotWidth} y1={y(resistanceHigh)} y2={y(resistanceHigh)} className="sr-zone-edge resistance" />
-            <line x1={left} x2={left + plotWidth} y1={y(resistanceLow)} y2={y(resistanceLow)} className="sr-zone-edge resistance" />
-          </g>
+          <rect x={left} y={y(resistanceHigh)} width={plotWidth}
+            height={Math.max(2, y(resistanceLow) - y(resistanceHigh))}
+            fill="url(#resistanceZoneFill)" />
         )}
         {supportHigh > supportLow && (
-          <g className="sr-zone support-zone">
-            <rect
-              x={left}
-              y={y(supportHigh)}
-              width={plotWidth}
-              height={Math.max(2, y(supportLow) - y(supportHigh))}
-              fill="url(#supportZoneFill)"
-            />
-            <line x1={left} x2={left + plotWidth} y1={y(supportHigh)} y2={y(supportHigh)} className="sr-zone-edge support" />
-            <line x1={left} x2={left + plotWidth} y1={y(supportLow)} y2={y(supportLow)} className="sr-zone-edge support" />
-          </g>
+          <rect x={left} y={y(supportHigh)} width={plotWidth}
+            height={Math.max(2, y(supportLow) - y(supportHigh))}
+            fill="url(#supportZoneFill)" />
         )}
 
-        {/* Candlesticks render after the zones, keeping their bodies and wicks clear. */}
+        {inViewLevels.map((item) => {
+          if (item.type.startsWith("target-")) {
+            const lineY = y(item.price);
+            const lineClass = item.type === "target-up" ? "chart-target-up" : "chart-target-down";
+            return (
+              <g key={item.id} className="chart-analysis-level">
+                <line x1={left} x2={left + plotWidth} y1={lineY} y2={lineY} className={lineClass} />
+                <text x={left + plotWidth - 5} y={lineY - 5} textAnchor="end" className="chart-level-label">{item.label} {formatAxisPrice(item.price)}</text>
+              </g>
+            );
+          }
+          const isSupport = item.type.startsWith("support");
+          const levelY = y((item.low + item.high) / 2);
+          return (
+            <g key={item.id} className={`chart-analysis-level ${item.type}`}>
+              <rect x={left} y={y(item.high)} width={plotWidth} height={Math.max(2, y(item.low) - y(item.high))}
+                className={`chart-level-fill ${isSupport ? "support-fill" : "resistance-fill"}`} />
+              <text x={left + plotWidth - 5} y={Math.max(top + 9, Math.min(height - bottom - 3, levelY - 4))}
+                textAnchor="end" className={`chart-level-label ${isSupport ? "support-label" : "resistance-label"}`}>
+                {item.label} {formatAxisPrice(item.price)}
+              </text>
+            </g>
+          );
+        })}
+
         {visible.map((c, i) => {
           const x = left + i * step + step / 2;
           const up = c.close >= c.open;
@@ -1071,7 +1174,22 @@ function CandleChart({ candles }) {
           );
         })}
 
-
+        {trendLines.map((line) => {
+          const firstEpoch = Number(line.first.epoch);
+          const secondEpoch = Number(line.second.epoch);
+          if (!Number.isFinite(firstEpoch) || !Number.isFinite(secondEpoch) || secondEpoch === firstEpoch) return null;
+          const priceAt = (epoch) => line.first.price + ((line.second.price - line.first.price) / (secondEpoch - firstEpoch)) * (epoch - firstEpoch);
+          const x1 = xForEpoch(firstEpoch);
+          const x2 = xForEpoch(secondEpoch);
+          return (
+            <g key={line.id} className={`chart-trendline ${line.direction.toLowerCase()}`}>
+              <line x1={left} y1={y(priceAt(firstVisibleEpoch))} x2={left + plotWidth} y2={y(priceAt(lastVisibleEpoch))}
+                stroke={line.color} strokeWidth="1" opacity="0.95" />
+              {x1 >= left && x1 <= left + plotWidth && <circle cx={x1} cy={y(line.first.price)} r="2.2" fill={line.color} />}
+              {x2 >= left && x2 <= left + plotWidth && <circle cx={x2} cy={y(line.second.price)} r="2.2" fill={line.color} />}
+            </g>
+          );
+        })}
 
         {priceLabels.map(({ price, y: labelY }, index) => (
           <text
@@ -1472,8 +1590,6 @@ export default function App() {
         throw new Error("The selected market returned no usable candles.");
       }
 
-      // Merge the newest completed candles with browser memory. Repeated analysis
-      // must add context, not discard the chart's previously observed history.
       const storageKey = getPlanStorageKey(market, timeframe);
       const memoryKey = getChartMemoryKey(market, timeframe);
       const oldMemory = readChartMemory(memoryKey);
@@ -1506,8 +1622,6 @@ export default function App() {
         ["BUY", "SELL"].includes(savedPlan.direction);
 
       if (savedPlanIsUsable) {
-        // Keep the original setup and levels. Terminal outcomes remain visible
-        // until the user deliberately starts a fresh analysis.
         const updatedPlan = PLAN_TERMINAL_STATUSES.has(savedPlan.status)
           ? savedPlan
           : updateActivePlan(savedPlan, mergedCandles, timeframe);
@@ -1703,7 +1817,7 @@ export default function App() {
             <span className="chart-live-tag">LOCAL + LIVE HISTORY</span>
           </div>
 
-          <CandleChart candles={candles} />
+          <CandleChart candles={candles} analysis={analysis} />
         </section>
       )}
 
@@ -1718,6 +1832,31 @@ export default function App() {
               {analysis.displayAction || analysis.action}
             </span>
           </div>
+
+          {analysis.trendContext && (
+            <div className="trend-context-strip">
+              <div className="trend-context-item">
+                <span>MAJOR TREND</span>
+                <strong>{analysis.trendContext.major}</strong>
+              </div>
+            </div>
+          )}
+
+          {analysis.trendContext && (
+            <div className="trend-zone-summary">
+              {[
+                ["SUPPORT", analysis.trendContext.support],
+                ["RESISTANCE", analysis.trendContext.resistance],
+              ].map(([label, zone]) => (
+                <div className="trend-zone-item" key={label}>
+                  <span>{label}</span>
+                  <strong>
+                    {zone ? fmt(zone.price) : "Not identified"}
+                  </strong>
+                </div>
+              ))}
+            </div>
+          )}
 
           <div className="analysis-paragraphs">
             {analysis.paragraphs.map((paragraph, index) => (
@@ -1779,6 +1918,56 @@ export default function App() {
             </div>
           </div>
 
+          <div className="signal-card major-swing-card">
+            <div className="signal-card-top">
+              <div>
+                <span className="field-label">MAJOR SWING TREND LINES</span>
+                <h3>WAIT</h3>
+              </div>
+              <div className="setup-type">
+                <span className="field-label">SETUP TYPE</span>
+                <strong>Breakout and retest</strong>
+              </div>
+            </div>
+            <div className="wait-message">
+              <h4>WHAT TO WAIT FOR</h4>
+              <p>
+                {analysis.trendContext?.trendLines?.length
+                  ? analysis.trendContext.major === "BULLISH"
+                    ? "Wait for a candle close outside the range, then a retest that holds. A bullish candle after an upper retest supports a buy idea; a bearish candle after a lower retest supports a sell idea. Use the single major swing trend line in the direction of the confirmed trend as the entry reference; require the retest candle to close in that direction."
+                    : analysis.trendContext.major === "BEARISH"
+                      ? "Wait for a candle close outside the range, then a retest that holds. A bullish candle after an upper retest supports a buy idea; a bearish candle after a lower retest supports a sell idea. Use the single major swing trend line in the direction of the confirmed trend as the entry reference; require the retest candle to close in that direction."
+                      : "Wait until a clear major swing direction and a valid trend line are confirmed."
+                  : "No valid major swing trend line is confirmed yet. Wait for two meaningful confirmed swing points; do not draw or trade an assumed line."}
+              </p>
+            </div>
+
+            {(analysis.trendContext?.trendLines || []).map((line) => (
+              <section
+                className={`scenario-watch major-swing-watch ${line.direction === "BULLISH" ? "bullish" : "bearish"}`}
+                key={line.id}
+              >
+                <div className="scenario-watch-label">
+                  <p>{line.direction === "BULLISH" ? "MAJOR BULLISH SWING TREND LINE" : "MAJOR BEARISH SWING TREND LINE"}</p>
+                </div>
+
+                <div className="scenario-watch-panel">
+                  {/* Projected trend-line price removed. Only the two anchor prices remain. */}
+                  <div className="trendline-anchor-grid">
+                    <div className="trendline-anchor">
+                      <span>POINT 1</span>
+                      <CopyPrice value={line.first.price} />
+                    </div>
+                    <div className="trendline-anchor">
+                      <span>POINT 2</span>
+                      <CopyPrice value={line.second.price} />
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ))}
+          </div>
+
           <div className="market-stats">
             <PriceStat label="RECENT HIGH" value={analysis.recentHigh} />
             <PriceStat label="RECENT LOW" value={analysis.recentLow} />
@@ -1793,7 +1982,7 @@ export default function App() {
             browser and requests up to 300 fresh candles when available. Memory
             is local to this browser and is not shared across devices. Swing
             zones and structure labels are rule-based estimates, not verified
-            institutional order blocks. Anticipations are conditional scenarios,
+            support, resistance and swing-based trend lines. Major swing structure and horizontal levels are conditional references,
             not guaranteed predictions. If one candle spans both stop and target,
             OHLC history cannot reveal which was reached first.
           </p>
