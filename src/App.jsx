@@ -17,6 +17,7 @@ const BASE_MARKETS = [
   { label: "Volatility 75 (1s) Index", category: "Synthetic Indices", symbol: "1HZ75V", provider: "deriv" },
   { label: "Volatility 100 (1s) Index", category: "Synthetic Indices", symbol: "1HZ100V", provider: "deriv" },
   { label: "EUR/USD", category: "Forex", symbol: "frxEURUSD", provider: "deriv" },
+  { label: "GBP/USD", category: "Forex", symbol: "frxGBPUSD", provider: "deriv" },
   { label: "GBP/JPY", category: "Forex", symbol: "frxGBPJPY", provider: "deriv" },
   { label: "USD/CAD", category: "Forex", symbol: "frxUSDCAD", provider: "deriv" },
   { label: "XAU/USD (Gold)", category: "Metals", symbol: "frxXAUUSD", provider: "deriv" },
@@ -120,7 +121,6 @@ function CopyBar({ value }) {
   const displayValue = Number.isFinite(Number(value)) ? String(Number(value)) : "—";
   return (
     <span className="trendline-bar-coordinate">
-      <strong>{displayValue}</strong>
       <button
         type="button"
         className="trendline-copy-button"
@@ -130,6 +130,7 @@ function CopyBar({ value }) {
       >
         ⧉
       </button>
+      <strong>{displayValue}</strong>
     </span>
   );
 }
@@ -210,6 +211,31 @@ function selectPriceLevel(zones, direction, currentPrice, pad) {
 
 const MAX_MEMORY_CANDLES = 600;
 const MAX_MEMORY_OBSERVATIONS = 30;
+const SESSION_STORAGE_KEY = "nox.session.v1";
+
+function readSavedSession() {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(SESSION_STORAGE_KEY) || "null");
+    if (!saved || typeof saved !== "object") return null;
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(market, timeframe) {
+  if (!market?.symbol || !Number.isFinite(Number(timeframe))) return;
+  try {
+    window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
+      provider: isCrypto(market) ? "binance" : "deriv",
+      symbol: String(market.exchangeSymbol || market.symbol).toUpperCase(),
+      timeframe: Number(timeframe),
+      savedAt: Date.now(),
+    }));
+  } catch {
+    // Session resume is best-effort when browser storage is unavailable.
+  }
+}
 
 function getChartMemoryKey(market, timeframe) {
   const provider = isCrypto(market) ? "binance" : "deriv";
@@ -407,10 +433,19 @@ function recordChartObservation(memory, story) {
 }
 
 /* Major swing structure uses confirmed candle-wick pivots inside the existing analysis window. */
-function detectStructureTrend(candles, lookback = 120) {
+function detectStructureTrend(candles, lookback = 120, timeframeSeconds = 300) {
   const sample = candles.slice(-lookback);
   const highs = [];
   const lows = [];
+  const chartWindow = candles.slice(-300);
+  const chartWindowStartEpoch = Number(chartWindow[0]?.epoch);
+  const safeTimeframeSeconds = Math.max(1, Number(timeframeSeconds) || 300);
+  const barIndexFor = (epoch, fallbackIndex) => {
+    if (Number.isFinite(chartWindowStartEpoch) && Number.isFinite(Number(epoch))) {
+      return Math.round((Number(epoch) - chartWindowStartEpoch) / safeTimeframeSeconds);
+    }
+    return fallbackIndex;
+  };
   const leftBars = 2;
   const rightBars = 2;
 
@@ -433,7 +468,7 @@ function detectStructureTrend(candles, lookback = 120) {
       highs.push({
         price: candle.high,
         index: i,
-        bar: i - (sample.length - 1),
+        bar: barIndexFor(candle.epoch, candles.length - sample.length + i),
         epoch: candle.epoch,
         candleIndex: candles.length - sample.length + i,
       });
@@ -443,7 +478,7 @@ function detectStructureTrend(candles, lookback = 120) {
       lows.push({
         price: candle.low,
         index: i,
-        bar: i - (sample.length - 1),
+        bar: barIndexFor(candle.epoch, candles.length - sample.length + i),
         epoch: candle.epoch,
         candleIndex: candles.length - sample.length + i,
       });
@@ -666,7 +701,7 @@ function selectTrendLineReference(lines, direction, currentPrice, epoch, pad) {
   };
 }
 
-function analyzeCandles(rawCandles) {
+function analyzeCandles(rawCandles, timeframeSeconds = 300) {
   const candles = (rawCandles || [])
     .map(normalizeCandle)
     .filter((c) =>
@@ -713,7 +748,7 @@ function analyzeCandles(rawCandles) {
   );
 
   const story = buildMarketStory(candles);
-  const majorTrend = detectStructureTrend(candles, 180);
+  const majorTrend = detectStructureTrend(candles, 180, timeframeSeconds);
   const detectedMajorTrendLines = buildSwingTrendLines(majorTrend, "MAJOR", pad * 0.2, candles);
 
   const trendLines = detectedMajorTrendLines.filter((line) =>
@@ -882,7 +917,7 @@ function analyzeCandles(rawCandles) {
       action: "SELL",
       setupType: "Bearish continuation · wait for pullback",
       marketCondition: "Bearish trend",
-      chartLevels: [...chartLevels, { id: "continuation-target", label: "DOWNSIDE OBJECTIVE", type: "target-down", price: continuationMagnet }],
+      chartLevels,
       trendContext: { ...trendContext, continuationMagnet },
       recentHigh: level(swingHigh), recentLow: level(swingLow), rangeHigh: level(swingHigh), rangeLow: level(swingLow),
       paragraphs: [
@@ -1541,7 +1576,7 @@ export default function App() {
   const [market, setMarket] = useState(null);
   const [search, setSearch] = useState("");
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
-  const [timeframe, setTimeframe] = useState(900);
+  const [timeframe, setTimeframe] = useState(300);
   const [candles, setCandles] = useState([]);
   const [analysis, setAnalysis] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -1549,6 +1584,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [cryptoMarkets, setCryptoMarkets] = useState([]);
   const [cryptoStatus, setCryptoStatus] = useState("Loading crypto markets…");
+  const resumePendingRef = useRef(false);
+  const resumeAttemptedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -1595,7 +1632,7 @@ export default function App() {
 
           return {
             label: `${displayName} (${baseAsset})`,
-            category: "Crypto · Binance spot data",
+            category: "Crypto · Binance USDT-M Futures",
             symbol: exchangeSymbol,
             provider: "binance",
             baseAsset,
@@ -1685,7 +1722,7 @@ export default function App() {
               `${String(market.baseAsset || "").toUpperCase()}USDT`
           ).toUpperCase(),
           timeframe:
-            TIMEFRAMES.find((tf) => tf.value === timeframe)?.apiValue || "15m",
+            TIMEFRAMES.find((tf) => tf.value === timeframe)?.apiValue || "5m",
           limit: "300",
         });
 
@@ -1706,7 +1743,7 @@ export default function App() {
         if (!response.ok) {
           throw new Error(
             result.error ||
-              "Could not retrieve Binance crypto candles. This crypto may not have a Binance USDT spot pair."
+              "Could not retrieve Binance crypto candles. This crypto may not have a Binance USDT-M perpetual futures contract."
           );
         }
 
@@ -1715,7 +1752,7 @@ export default function App() {
         }
 
         data = result.candles.map(normalizeCandle);
-        setConnection("Connected · Binance public crypto data");
+        setConnection("Connected · Binance USDT-M Futures data");
       } else {
         setConnection("Connecting to Deriv market data…");
 
@@ -1780,7 +1817,7 @@ export default function App() {
       setCandles(mergedCandles);
 
       const runFreshAnalysis = (story, info) => {
-        const freshAnalysis = enforceMinimumRewardRisk(analyzeCandles(mergedCandles));
+        const freshAnalysis = enforceMinimumRewardRisk(analyzeCandles(mergedCandles, timeframe));
         freshAnalysis.marketStory = story;
         freshAnalysis.memoryInfo = info;
         const side = freshAnalysis.action.toLowerCase();
@@ -1803,9 +1840,48 @@ export default function App() {
         ["BUY", "SELL"].includes(savedPlan.direction);
 
       if (savedPlanIsUsable) {
-        const updatedPlan = updateActivePlan(savedPlan, mergedCandles, timeframe);
+        // Rebuild the current conclusion on every scan before allowing historical
+        // plan memory to remain active. Memory is context, never a permanent bias.
+        const currentAnalysis = enforceMinimumRewardRisk(analyzeCandles(mergedCandles, timeframe));
+        const currentDirection = currentAnalysis.action;
+        const savedDirectionStillAgrees = currentDirection === savedPlan.direction;
+        const currentStructure = currentAnalysis.trendContext?.major || "NEUTRAL";
+        const savedStructure =
+          savedPlan.analysisSnapshot?.trendContext?.major ||
+          savedPlan.trendContext?.major ||
+          savedPlan.marketStructure ||
+          null;
+        const structureStillAgrees = !savedStructure || savedStructure === currentStructure;
+        const savedLine = savedPlan.analysisSnapshot?.trendContext?.trendLines?.[0] || null;
+        const currentLine = currentAnalysis.trendContext?.trendLines?.[0] || null;
+        const sameTrendLine =
+          (!savedLine && !currentLine) ||
+          Boolean(
+            savedLine &&
+            currentLine &&
+            savedLine.direction === currentLine.direction &&
+            Number(savedLine.first?.epoch) === Number(currentLine.first?.epoch) &&
+            Number(savedLine.second?.epoch) === Number(currentLine.second?.epoch)
+          );
+        const memoryStillValid =
+          savedDirectionStillAgrees &&
+          structureStillAgrees &&
+          sameTrendLine;
 
-        if (PLAN_TERMINAL_STATUSES.has(updatedPlan.status)) {
+        if (!memoryStillValid) {
+          removeSavedPlan(storageKey);
+          marketStory = buildMarketStory(mergedCandles, null);
+          updatedMemory = recordChartObservation(
+            { candles: mergedCandles, observations: [] },
+            marketStory
+          );
+          saveChartMemory(updatedMemory);
+          memoryInfo = makeMemoryInfo(updatedMemory);
+          runFreshAnalysis(marketStory, memoryInfo);
+        } else {
+          const updatedPlan = updateActivePlan(savedPlan, mergedCandles, timeframe);
+
+          if (PLAN_TERMINAL_STATUSES.has(updatedPlan.status)) {
           // The plan became invalid/completed on this scan. Drop its old bias
           // immediately and rebuild the report from current candles only.
           removeSavedPlan(storageKey);
@@ -1817,9 +1893,10 @@ export default function App() {
           saveChartMemory(updatedMemory);
           memoryInfo = makeMemoryInfo(updatedMemory);
           runFreshAnalysis(marketStory, memoryInfo);
-        } else {
-          savePlan(storageKey, updatedPlan);
-          setAnalysis(presentActivePlan(updatedPlan, marketStory, memoryInfo));
+          } else {
+            savePlan(storageKey, updatedPlan);
+            setAnalysis(presentActivePlan(updatedPlan, marketStory, memoryInfo));
+          }
         }
       } else {
         if (savedPlanWasAlreadyTerminal) removeSavedPlan(storageKey);
@@ -1828,7 +1905,7 @@ export default function App() {
 
       setConnection(
         isCrypto(market)
-          ? "Data received · Binance"
+          ? "Data received · Binance USDT-M Futures"
           : "Data received · Deriv connection closed"
       );
     } catch (err) {
@@ -1847,8 +1924,40 @@ export default function App() {
     }
   }
 
+  useEffect(() => {
+    if (resumeAttemptedRef.current || cryptoStatus === "Loading crypto markets…") return;
+    resumeAttemptedRef.current = true;
+
+    const savedSession = readSavedSession();
+    if (!savedSession?.symbol || !Number.isFinite(Number(savedSession.timeframe))) return;
+
+    const restoredMarket = allMarkets.find((item) => {
+      const provider = isCrypto(item) ? "binance" : "deriv";
+      const symbol = String(item.exchangeSymbol || item.symbol || "").toUpperCase();
+      return provider === savedSession.provider && symbol === String(savedSession.symbol).toUpperCase();
+    });
+
+    if (!restoredMarket) return;
+
+    resumePendingRef.current = true;
+    setMarket(restoredMarket);
+    setSearch(restoredMarket.label);
+    setTimeframe(Number(savedSession.timeframe));
+    setSuggestionsOpen(false);
+  }, [allMarkets, cryptoStatus]);
+
+  useEffect(() => {
+    if (!resumePendingRef.current || !market) return;
+    resumePendingRef.current = false;
+    runAnalysis();
+  }, [market, timeframe]);
+
+  useEffect(() => {
+    if (market) saveSession(market, timeframe);
+  }, [market, timeframe]);
+
   const providerDescription = isCrypto(market)
-    ? "Requesting Binance public crypto candles. No orders will be placed."
+    ? "Requesting Binance USDT-M Futures candles. No orders will be placed."
     : "Connecting to Deriv and requesting historical candles. No orders will be placed.";
 
   return (
@@ -2032,9 +2141,11 @@ export default function App() {
               ].map(([label, zone]) => (
                 <div className="trend-zone-item" key={label}>
                   <span>{label}</span>
-                  <strong>
-                    {zone ? fmt(zone.price) : "Not identified"}
-                  </strong>
+                  {zone ? (
+                    <CopyPrice value={zone.price} size="trend-zone-price" />
+                  ) : (
+                    <strong>Not identified</strong>
+                  )}
                 </div>
               ))}
             </div>
