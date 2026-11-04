@@ -2,27 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { connectToDeriv, getCandles, formatCandleTime } from "./deriv";
 import "./App.css";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:3001";
-
-const BASE_MARKETS = [
-  { label: "Volatility 10 Index", category: "Synthetic Indices", symbol: "R_10", provider: "deriv" },
-  { label: "Volatility 25 Index", category: "Synthetic Indices", symbol: "R_25", provider: "deriv" },
-  { label: "Volatility 50 Index", category: "Synthetic Indices", symbol: "R_50", provider: "deriv" },
-  { label: "Volatility 75 Index", category: "Synthetic Indices", symbol: "R_75", provider: "deriv" },
-  { label: "Volatility 100 Index", category: "Synthetic Indices", symbol: "R_100", provider: "deriv" },
-  { label: "Volatility 10 (1s) Index", category: "Synthetic Indices", symbol: "1HZ10V", provider: "deriv" },
-  { label: "Volatility 25 (1s) Index", category: "Synthetic Indices", symbol: "1HZ25V", provider: "deriv" },
-  { label: "Volatility 50 (1s) Index", category: "Synthetic Indices", symbol: "1HZ50V", provider: "deriv" },
-  { label: "Volatility 75 (1s) Index", category: "Synthetic Indices", symbol: "1HZ75V", provider: "deriv" },
-  { label: "Volatility 100 (1s) Index", category: "Synthetic Indices", symbol: "1HZ100V", provider: "deriv" },
-  { label: "EUR/USD", category: "Forex", symbol: "frxEURUSD", provider: "deriv" },
-  { label: "GBP/USD", category: "Forex", symbol: "frxGBPUSD", provider: "deriv" },
-  { label: "GBP/JPY", category: "Forex", symbol: "frxGBPJPY", provider: "deriv" },
-  { label: "USD/CAD", category: "Forex", symbol: "frxUSDCAD", provider: "deriv" },
-  { label: "XAU/USD (Gold)", category: "Metals", symbol: "frxXAUUSD", provider: "deriv" },
-  { label: "BTC/USD", category: "Crypto · Deriv", symbol: "cryBTCUSD", provider: "deriv" },
-];
 
 const TIMEFRAMES = [
   { label: "1 minute", value: 60, apiValue: "1m" },
@@ -37,8 +16,6 @@ const TIMEFRAMES = [
   { label: "1 week", value: 604800, apiValue: "1W" },
   { label: "1 month", value: 2592000, apiValue: "1M" },
 ];
-
-const isCrypto = (market) => market?.provider === "binance";
 
 const fmt = (value) =>
   value !== null && value !== undefined && String(value).trim() !== "" && Number.isFinite(Number(value))
@@ -59,52 +36,64 @@ function formatAxisPrice(value) {
   });
 }
 
-async function copyPrice(value) {
-  const text = fmt(value);
+async function copyToClipboard(value) {
+  const text = String(value ?? "");
+  if (!text || text === "—") return false;
 
   try {
-    await navigator.clipboard.writeText(text);
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
   } catch {
-    const field = document.createElement("textarea");
+    // Continue to the compatibility fallback below.
+  }
+
+  let field;
+  try {
+    field = document.createElement("textarea");
     field.value = text;
     field.setAttribute("readonly", "");
     field.style.position = "fixed";
+    field.style.left = "-9999px";
+    field.style.top = "0";
     field.style.opacity = "0";
     document.body.appendChild(field);
+    field.focus();
     field.select();
-    document.execCommand("copy");
-    field.remove();
+    field.setSelectionRange(0, field.value.length);
+    return Boolean(document.execCommand("copy"));
+  } catch {
+    return false;
+  } finally {
+    field?.remove();
   }
 }
 
-async function copyText(value) {
-  const text = String(value ?? "");
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const field = document.createElement("textarea");
-    field.value = text;
-    field.setAttribute("readonly", "");
-    field.style.position = "fixed";
-    field.style.opacity = "0";
-    document.body.appendChild(field);
-    field.select();
-    document.execCommand("copy");
-    field.remove();
-  }
+function formatClipboardNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : "—";
 }
 
 function CopyPrice({ value, size = "", copyFirst = false }) {
+  const [copied, setCopied] = useState(false);
   const displayValue = fmt(value);
+  const handleCopy = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const success = await copyToClipboard(formatClipboardNumber(value));
+    setCopied(success);
+    if (success) window.setTimeout(() => setCopied(false), 1200);
+  };
   const copyButton = (
     <button
       type="button"
-      className="copy-price-button"
-      onClick={() => copyPrice(value)}
+      className={`copy-price-button${copied ? " is-copied" : ""}`}
+      onClick={handleCopy}
       aria-label={`Copy price ${displayValue}`}
-      title="Copy price"
+      title={copied ? "Copied" : "Copy price"}
     >
-      ⧉
+      {copied ? "✓" : "⧉"}
     </button>
   );
 
@@ -118,17 +107,25 @@ function CopyPrice({ value, size = "", copyFirst = false }) {
 }
 
 function CopyBar({ value }) {
+  const [copied, setCopied] = useState(false);
   const displayValue = Number.isFinite(Number(value)) ? String(Number(value)) : "—";
+  const handleCopy = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const success = await copyToClipboard(displayValue);
+    setCopied(success);
+    if (success) window.setTimeout(() => setCopied(false), 1200);
+  };
   return (
     <span className="trendline-bar-coordinate">
       <button
         type="button"
-        className="trendline-copy-button"
-        onClick={() => copyText(displayValue)}
+        className={`trendline-copy-button${copied ? " is-copied" : ""}`}
+        onClick={handleCopy}
         aria-label={`Copy swing bar ${displayValue}`}
-        title="Copy swing bar"
+        title={copied ? "Copied" : "Copy swing bar"}
       >
-        ⧉
+        {copied ? "✓" : "⧉"}
       </button>
       <strong>{displayValue}</strong>
     </span>
@@ -227,8 +224,8 @@ function saveSession(market, timeframe) {
   if (!market?.symbol || !Number.isFinite(Number(timeframe))) return;
   try {
     window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify({
-      provider: isCrypto(market) ? "binance" : "deriv",
-      symbol: String(market.exchangeSymbol || market.symbol).toUpperCase(),
+      provider: "deriv",
+      symbol: String(market.symbol).trim(),
       timeframe: Number(timeframe),
       savedAt: Date.now(),
     }));
@@ -238,9 +235,8 @@ function saveSession(market, timeframe) {
 }
 
 function getChartMemoryKey(market, timeframe) {
-  const provider = isCrypto(market) ? "binance" : "deriv";
-  const symbol = String(market?.exchangeSymbol || market?.symbol || "").toUpperCase();
-  return `nox.chartMemory.v1:${provider}:${symbol}:${timeframe}`;
+  const symbol = String(market?.symbol || "").trim();
+  return `nox.chartMemory.v2:deriv:${symbol}:${timeframe}`;
 }
 
 function readChartMemory(storageKey) {
@@ -432,66 +428,47 @@ function recordChartObservation(memory, story) {
   return { ...memory, candles: (memory.candles || []).slice(-MAX_MEMORY_CANDLES), observations: observations.slice(-MAX_MEMORY_OBSERVATIONS) };
 }
 
-/* Major swing structure uses confirmed candle-wick pivots inside the existing analysis window. */
-function detectStructureTrend(candles, lookback = 120, timeframeSeconds = 300) {
-  const sample = candles.slice(-lookback);
+/* One confirmed-wick pivot engine feeds structure and trendline anchors. */
+function detectConfirmedSwings(candles, lookback = 180) {
+  const sampleStart = Math.max(0, candles.length - lookback);
+  const sample = candles.slice(sampleStart);
+  const chartStartIndex = Math.max(0, candles.length - 300);
   const highs = [];
   const lows = [];
-  const chartWindow = candles.slice(-300);
-  const chartWindowStartEpoch = Number(chartWindow[0]?.epoch);
-  const safeTimeframeSeconds = Math.max(1, Number(timeframeSeconds) || 300);
-  const barIndexFor = (epoch, fallbackIndex) => {
-    if (Number.isFinite(chartWindowStartEpoch) && Number.isFinite(Number(epoch))) {
-      return Math.round((Number(epoch) - chartWindowStartEpoch) / safeTimeframeSeconds);
-    }
-    return fallbackIndex;
-  };
   const leftBars = 2;
   const rightBars = 2;
 
-  // A pivot is confirmed only after two candles have closed to its right.
-  // High/low comparisons deliberately use wicks, not candle bodies or closes.
   for (let i = leftBars; i < sample.length - rightBars; i += 1) {
     const candle = sample[i];
     const left = sample.slice(i - leftBars, i);
     const right = sample.slice(i + 1, i + rightBars + 1);
-
-    const isSwingHigh =
-      left.every((bar) => candle.high >= bar.high) &&
+    const isSwingHigh = left.every((bar) => candle.high >= bar.high) &&
       right.every((bar) => candle.high > bar.high);
-
-    const isSwingLow =
-      left.every((bar) => candle.low <= bar.low) &&
+    const isSwingLow = left.every((bar) => candle.low <= bar.low) &&
       right.every((bar) => candle.low < bar.low);
+    const candleIndex = sampleStart + i;
+    const point = {
+      index: candleIndex,
+      candleIndex,
+      bar: candleIndex - chartStartIndex,
+      epoch: Number(candle.epoch),
+    };
 
-    if (isSwingHigh) {
-      highs.push({
-        price: candle.high,
-        index: i,
-        bar: barIndexFor(candle.epoch, candles.length - sample.length + i),
-        epoch: candle.epoch,
-        candleIndex: candles.length - sample.length + i,
-      });
-    }
-
-    if (isSwingLow) {
-      lows.push({
-        price: candle.low,
-        index: i,
-        bar: barIndexFor(candle.epoch, candles.length - sample.length + i),
-        epoch: candle.epoch,
-        candleIndex: candles.length - sample.length + i,
-      });
-    }
+    if (isSwingHigh) highs.push({ ...point, price: candle.high });
+    if (isSwingLow) lows.push({ ...point, price: candle.low });
   }
 
+  return { highs, lows, chartStartIndex };
+}
+
+/* Structure, BUY/SELL bias and trendline anchors share the same confirmed pivots. */
+function detectStructureTrend(candles, lookback = 180) {
+  const { highs, lows } = detectConfirmedSwings(candles, lookback);
   const lastTwoHighs = highs.slice(-2);
   const lastTwoLows = lows.slice(-2);
   let direction = "NEUTRAL";
   let description = "Insufficient confirmed swing structure";
 
-  // A directional structure needs two confirmed highs AND two confirmed lows.
-  // This prevents a trend bias being inferred from an incomplete swing sequence.
   if (lastTwoHighs.length === 2 && lastTwoLows.length === 2) {
     const higherHigh = lastTwoHighs[1].price > lastTwoHighs[0].price;
     const higherLow = lastTwoLows[1].price > lastTwoLows[0].price;
@@ -521,151 +498,78 @@ function detectStructureTrend(candles, lookback = 120, timeframeSeconds = 300) {
 
 function buildSwingTrendLines(trend, scope, tolerance = 0, candles = []) {
   const lines = [];
+  if (trend?.direction !== "BULLISH" && trend?.direction !== "BEARISH") return lines;
 
-  // Do not draw any swing trendline until the price structure itself has
-  // at least two confirmed swing points of the relevant type and direction.
-  if (trend?.direction !== "BULLISH" && trend?.direction !== "BEARISH") {
-    return lines;
-  }
-
-  const validPoints = (points) => (points || []).filter((point) =>
-    Number.isFinite(point.price) &&
-    Number.isFinite(point.index) &&
+  const bullish = trend.direction === "BULLISH";
+  const points = (bullish ? (trend.lows || []) : (trend.highs || [])).filter((point) =>
+    Number.isFinite(point.price) && Number.isFinite(point.candleIndex) &&
     Number.isFinite(point.epoch)
   );
+  if (points.length < 2) return lines;
 
-  const highs = validPoints(trend.highs);
-  const lows = validPoints(trend.lows);
-  const bullish = trend.direction === "BULLISH";
-
-  // ATR-like wick buffer from the existing candle stream; this is only a
-  // small allowance for market noise, not permission for a decisive breach.
-  const recentCandles = candles.slice(-14);
+  const recentCandles = candles.slice(-20);
   const trueRanges = recentCandles.map((candle, index) => {
-    const previousClose = index > 0
-      ? recentCandles[index - 1].close
-      : candle.open;
-    return Math.max(
-      candle.high - candle.low,
-      Math.abs(candle.high - previousClose),
-      Math.abs(candle.low - previousClose)
-    );
+    const previousClose = index ? recentCandles[index - 1].close : candle.open;
+    return Math.max(candle.high - candle.low,
+      Math.abs(candle.high - previousClose), Math.abs(candle.low - previousClose));
   }).filter((value) => Number.isFinite(value) && value > 0);
-
   const averageTrueRange = trueRanges.length
     ? trueRanges.reduce((sum, value) => sum + value, 0) / trueRanges.length
     : 0;
+  const wickTolerance = Math.max(Number.isFinite(tolerance) ? tolerance : 0, averageTrueRange * 0.10);
+  const minDisplacement = Math.max(averageTrueRange * 0.35, Math.abs(candles.at(-1)?.close || 0) * 0.00003);
+  let best = null;
 
-  const wickTolerance = Math.max(
-    Number.isFinite(tolerance) ? tolerance : 0,
-    averageTrueRange * 0.08
-  );
+  for (let i = 0; i < points.length - 1; i += 1) {
+    for (let j = i + 1; j < points.length; j += 1) {
+      const first = points[i];
+      const second = points[j];
+      const distance = second.candleIndex - first.candleIndex;
+      if (distance < 6) continue;
 
-  const choosePair = (points, direction) => {
-    if (points.length < 2) return null;
+      const displacement = second.price - first.price;
+      if (bullish ? displacement <= minDisplacement : displacement >= -minDisplacement) continue;
+      const slope = displacement / distance;
+      const lineAt = (index) => first.price + slope * (index - first.candleIndex);
+      let breached = false;
+      let touchCount = 0;
+      let totalViolation = 0;
 
-    let best = null;
-    for (let i = 0; i < points.length - 1; i += 1) {
-      for (let j = i + 1; j < points.length; j += 1) {
-        const first = points[i];
-        const second = points[j];
-        const distance = second.index - first.index;
-        if (distance < 4) continue;
+      // Check all candles from the first anchor through the latest completed candle.
+      for (let candleIndex = first.candleIndex; candleIndex < candles.length; candleIndex += 1) {
+        const candle = candles[candleIndex];
+        if (!candle) continue;
+        const projected = lineAt(candleIndex);
+        const wick = bullish ? candle.low : candle.high;
+        const violation = bullish ? projected - wick : wick - projected;
 
-        const validSlope = direction === "BULLISH"
-          ? second.price > first.price
-          : second.price < first.price;
-        if (!validSlope) continue;
-
-        const slope = (second.price - first.price) / distance;
-        const lineAt = (index) => first.price + slope * (index - first.index);
-        let breached = false;
-        let touchCount = 0;
-        let worstViolation = 0;
-
-        // Validate the line against EVERY candle wick between its anchors.
-        // Support must not be decisively broken by a low; resistance must
-        // not be decisively broken by a high.
-        const firstCandleIndex = first.candleIndex;
-        const secondCandleIndex = second.candleIndex;
-        if (
-          !Number.isFinite(firstCandleIndex) ||
-          !Number.isFinite(secondCandleIndex) ||
-          secondCandleIndex <= firstCandleIndex
-        ) continue;
-
-        for (let candleIndex = firstCandleIndex; candleIndex <= secondCandleIndex; candleIndex += 1) {
-          const candle = candles[candleIndex];
-          if (!candle) continue;
-
-          const analysisIndex = first.index + (candleIndex - firstCandleIndex);
-          const projected = lineAt(analysisIndex);
-          const wick = direction === "BULLISH" ? candle.low : candle.high;
-          const violation = direction === "BULLISH"
-            ? projected - wick
-            : wick - projected;
-
-          if (violation > wickTolerance) {
-            breached = true;
-            worstViolation = Math.max(worstViolation, violation);
-            break;
-          }
-
-          if (Math.abs(wick - projected) <= Math.max(wickTolerance, averageTrueRange * 0.12)) {
-            touchCount += 1;
-          }
+        if (violation > wickTolerance) {
+          breached = true;
+          totalViolation += violation;
+          break;
         }
-
-        if (breached) continue;
-
-        // Prefer the most recent valid pair, then the pair with meaningful
-        // separation and repeated wick interaction (not a near-vertical line).
-        const score =
-          second.index * 1000 +
-          Math.min(distance, 80) * 3 +
-          Math.min(touchCount, 8) * 12 -
-          worstViolation * 100;
-
-        if (!best || score > best.score) {
-          best = { first, second, score, touchCount };
+        if (candleIndex <= second.candleIndex && Math.abs(wick - projected) <= Math.max(wickTolerance, averageTrueRange * 0.16)) {
+          touchCount += 1;
         }
       }
-    }
-    return best;
-  };
+      if (breached || touchCount < 2) continue;
 
-  if (bullish && lows.length >= 2) {
-    const support = choosePair(lows, "BULLISH");
-    if (support) {
-      lines.push({
-        id: `${scope}-bullish-trendline`,
-        scope,
-        direction: "BULLISH",
-        kind: "RISING SUPPORT",
-        color: "#008f83",
-        first: { ...support.first },
-        second: { ...support.second },
-        touches: support.touchCount,
-      });
+      const score = second.candleIndex * 1000 + Math.min(distance, 120) * 2 + Math.min(touchCount, 8) * 15 - totalViolation * 100;
+      if (!best || score > best.score) best = { first, second, score, touchCount };
     }
   }
 
-  if (!bullish && highs.length >= 2) {
-    const resistance = choosePair(highs, "BEARISH");
-    if (resistance) {
-      lines.push({
-        id: `${scope}-bearish-trendline`,
-        scope,
-        direction: "BEARISH",
-        kind: "FALLING RESISTANCE",
-        color: "#aa0000",
-        first: { ...resistance.first },
-        second: { ...resistance.second },
-        touches: resistance.touchCount,
-      });
-    }
-  }
-
+  if (!best) return lines;
+  lines.push({
+    id: `${scope}-${bullish ? "bullish" : "bearish"}-trendline`,
+    scope,
+    direction: trend.direction,
+    kind: bullish ? "RISING SUPPORT" : "FALLING RESISTANCE",
+    color: bullish ? "#008f83" : "#aa0000",
+    first: { ...best.first },
+    second: { ...best.second },
+    touches: best.touchCount,
+  });
   return lines;
 }
 
@@ -748,7 +652,7 @@ function analyzeCandles(rawCandles, timeframeSeconds = 300) {
   );
 
   const story = buildMarketStory(candles);
-  const majorTrend = detectStructureTrend(candles, 180, timeframeSeconds);
+  const majorTrend = detectStructureTrend(candles, 180);
   const detectedMajorTrendLines = buildSwingTrendLines(majorTrend, "MAJOR", pad * 0.2, candles);
 
   const trendLines = detectedMajorTrendLines.filter((line) =>
@@ -786,10 +690,11 @@ function analyzeCandles(rawCandles, timeframeSeconds = 300) {
   const resistance = selectPriceLevel(priceLevels, "SELL", last.close, pad);
   const bullishTrendLine = selectTrendLineReference(trendLines, "BUY", last.close, last.epoch, pad);
   const bearishTrendLine = selectTrendLineReference(trendLines, "SELL", last.close, last.epoch, pad);
-  const bullish = bullishStructure && Boolean(bullishTrendLine);
-  const bearish = bearishStructure && Boolean(bearishTrendLine);
+  const bullish = bullishStructure;
+  const bearish = bearishStructure;
 
   const isConsolidating =
+    majorTrend.direction === "NEUTRAL" &&
     !bullish &&
     !bearish &&
     (swingHigh - swingLow) / Math.max(Math.abs(last.close), 1e-9) < 0.012 &&
@@ -869,21 +774,21 @@ function analyzeCandles(rawCandles, timeframeSeconds = 300) {
   }
 
   if (bullish) {
-    const selectedLevel = bullishTrendLine;
+    const selectedLevel = bullishTrendLine || support;
     const watchLow = selectedLevel ? level(selectedLevel.low) : level(Math.max(swingLow, last.close - pad));
     const watchHigh = selectedLevel ? level(selectedLevel.high) : level(Math.max(watchLow + pad * 0.25, last.close - pad * 0.25));
     const entry = level((watchLow + watchHigh) / 2);
     const stop = level(Math.min(swingLow, majorTrend.swingLow ?? swingLow) - pad * 0.12);
     const opposingResistance = resistance && resistance.price > entry ? resistance : null;
     const tp = opposingResistance ? level(opposingResistance.price) : level(Math.max(swingHigh, entry + targetDistance));
-    const zoneType = "Major rising swing trend line";
+    const zoneType = bullishTrendLine ? "Major rising swing trend line" : support ? "Horizontal support area" : "Recent structural support area";
     const continuationMagnet = tp;
 
     return {
       action: "BUY",
       setupType: "Bullish continuation · wait for pullback",
       marketCondition: "Bullish trend",
-      chartLevels: [...chartLevels, { id: "continuation-target", label: "UPSIDE OBJECTIVE", type: "target-up", price: continuationMagnet }],
+      chartLevels,
       trendContext: { ...trendContext, continuationMagnet },
       recentHigh: level(swingHigh), recentLow: level(swingLow), rangeHigh: level(swingHigh), rangeLow: level(swingLow),
       paragraphs: [
@@ -903,14 +808,14 @@ function analyzeCandles(rawCandles, timeframeSeconds = 300) {
   }
 
   if (bearish) {
-    const selectedLevel = bearishTrendLine;
+    const selectedLevel = bearishTrendLine || resistance;
     const watchLow = selectedLevel ? level(selectedLevel.low) : level(Math.min(swingHigh, last.close + pad * 0.25));
     const watchHigh = selectedLevel ? level(selectedLevel.high) : level(Math.max(watchLow + pad * 0.25, last.close + pad));
     const entry = level((watchLow + watchHigh) / 2);
     const stop = level(Math.max(swingHigh, majorTrend.swingHigh ?? swingHigh) + pad * 0.12);
     const opposingSupport = support && support.price < entry ? support : null;
     const tp = opposingSupport ? level(opposingSupport.price) : level(Math.min(swingLow, entry - targetDistance));
-    const zoneType = "Major falling swing trend line";
+    const zoneType = bearishTrendLine ? "Major falling swing trend line" : resistance ? "Horizontal resistance area" : "Recent structural resistance area";
     const continuationMagnet = tp;
 
     return {
@@ -1024,9 +929,8 @@ function enforceMinimumRewardRisk(analysis) {
 const PLAN_TERMINAL_STATUSES = new Set(["INVALIDATED", "TARGET REACHED", "AMBIGUOUS CANDLE"]);
 
 function getPlanStorageKey(market, timeframe) {
-  const provider = isCrypto(market) ? "binance" : "deriv";
-  const symbol = String(market?.exchangeSymbol || market?.symbol || "").toUpperCase();
-  return `nox.activePlan.v2:${provider}:${symbol}:${timeframe}`;
+  const symbol = String(market?.symbol || "").trim();
+  return `nox.activePlan.v3:deriv:${symbol}:${timeframe}`;
 }
 
 function readSavedPlan(storageKey) {
@@ -1054,6 +958,21 @@ function removeSavedPlan(storageKey) {
   }
 }
 
+function getCandleCloseEpoch(epoch, timeframeSeconds) {
+  if (timeframeSeconds === 2592000) {
+    const nextMonth = new Date(Number(epoch) * 1000);
+    nextMonth.setUTCDate(1);
+    nextMonth.setUTCMonth(nextMonth.getUTCMonth() + 1);
+    nextMonth.setUTCHours(0, 0, 0, 0);
+    return nextMonth.getTime() / 1000;
+  }
+  return Number(epoch) + timeframeSeconds;
+}
+
+function getCandleDurationSeconds(epoch, timeframeSeconds) {
+  return getCandleCloseEpoch(epoch, timeframeSeconds) - Number(epoch);
+}
+
 function getCompletedCandles(rawCandles, timeframeSeconds) {
   const nowSeconds = Date.now() / 1000;
   return (rawCandles || [])
@@ -1061,7 +980,7 @@ function getCompletedCandles(rawCandles, timeframeSeconds) {
     .filter((candle) =>
       Number.isFinite(candle.epoch) &&
       [candle.open, candle.high, candle.low, candle.close].every(Number.isFinite) &&
-      candle.epoch + timeframeSeconds <= nowSeconds
+      getCandleCloseEpoch(candle.epoch, timeframeSeconds) <= nowSeconds
     )
     .sort((a, b) => a.epoch - b.epoch);
 }
@@ -1162,7 +1081,7 @@ function updateActivePlan(plan, completedCandles, timeframeSeconds) {
     const recentZoneTouch =
       nextPlan.zoneTouched &&
       Number.isFinite(Number(nextPlan.zoneTouchEpoch)) &&
-      candle.epoch - Number(nextPlan.zoneTouchEpoch) <= timeframeSeconds * 2;
+      candle.epoch - Number(nextPlan.zoneTouchEpoch) <= getCandleDurationSeconds(Number(nextPlan.zoneTouchEpoch), timeframeSeconds) * 2;
     const confirmed = recentZoneTouch && movedWithDirection &&
       (plan.direction === "BUY" ? candleIsBullish : candleIsBearish);
 
@@ -1362,12 +1281,14 @@ function CandleChart({ candles, analysis }) {
           const priceAt = (epoch) => line.first.price + ((line.second.price - line.first.price) / (secondEpoch - firstEpoch)) * (epoch - firstEpoch);
           const x1 = xForEpoch(firstEpoch);
           const x2 = xForEpoch(secondEpoch);
+          const chartRight = left + plotWidth;
           return (
             <g key={line.id} className={`chart-trendline ${line.direction.toLowerCase()}`}>
-              <line x1={left} y1={y(priceAt(firstVisibleEpoch))} x2={left + plotWidth} y2={y(priceAt(lastVisibleEpoch))}
+              {/* Anchor the displayed trendline at Point 1, then project it forward. */}
+              <line x1={x1} y1={y(line.first.price)} x2={chartRight} y2={y(priceAt(lastVisibleEpoch))}
                 stroke={line.color} strokeWidth="1" opacity="0.95" />
-              {x1 >= left && x1 <= left + plotWidth && <circle cx={x1} cy={y(line.first.price)} r="2.2" fill={line.color} />}
-              {x2 >= left && x2 <= left + plotWidth && <circle cx={x2} cy={y(line.second.price)} r="2.2" fill={line.color} />}
+              {x1 >= left && x1 <= chartRight && <circle cx={x1} cy={y(line.first.price)} r="2.2" fill={line.color} />}
+              {x2 >= left && x2 <= chartRight && <circle cx={x2} cy={y(line.second.price)} r="2.2" fill={line.color} />}
             </g>
           );
         })}
@@ -1582,98 +1503,72 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [connection, setConnection] = useState("Not connected");
   const [error, setError] = useState("");
-  const [cryptoMarkets, setCryptoMarkets] = useState([]);
-  const [cryptoStatus, setCryptoStatus] = useState("Loading crypto markets…");
+  const [derivMarkets, setDerivMarkets] = useState([]);
+  const [marketStatus, setMarketStatus] = useState("Loading active Deriv markets…");
   const resumePendingRef = useRef(false);
   const resumeAttemptedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    let client = null;
 
-    async function loadCryptoMarkets() {
+    async function loadDerivMarkets() {
       try {
-        const endpoint = `${API_BASE_URL}/api/binance/markets`;
-        const response = await fetch(endpoint);
-        const contentType = response.headers.get("content-type") || "";
+        setMarketStatus("Connecting to Deriv and loading active markets…");
+        client = await connectToDeriv();
+        const activeSymbols = await client.getActiveSymbols();
+        const seen = new Set();
+        const markets = activeSymbols.map((item) => {
+          const symbol = String(item.underlying_symbol || item.symbol || "").trim();
+          if (!symbol || seen.has(symbol)) return null;
+          seen.add(symbol);
 
-        if (!contentType.toLowerCase().includes("application/json")) {
-          const bodyPreview = (await response.text())
-            .replace(/\s+/g, " ")
-            .slice(0, 100);
-
-          throw new Error(
-            `Expected JSON from ${endpoint} but received HTML or another content type. Check your backend URL and deployment. Response: ${bodyPreview}`
-          );
-        }
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error || "Binance market list request failed.");
-        }
-
-        if (!Array.isArray(data.markets)) {
-          throw new Error(
-            data.error || "Binance response did not contain a markets array."
-          );
-        }
-
-        const markets = data.markets.map((coin) => {
-          const exchangeSymbol = String(
-            coin.exchangeSymbol || coin.id || coin.symbol || ""
-          ).toUpperCase();
-          const rawBaseAsset = String(
-            coin.baseAsset || coin.symbol || exchangeSymbol
-          ).toUpperCase();
-          const baseAsset = rawBaseAsset.endsWith("USDT")
-            ? rawBaseAsset.slice(0, -4)
-            : rawBaseAsset;
-          const displayName = coin.name || baseAsset;
+          const displayName = String(
+            item.underlying_symbol_name || item.display_name || item.name || symbol
+          ).trim() || symbol;
+          const marketName = String(
+            item.market_display_name || item.market || item.market_name || "Other Deriv Markets"
+          ).trim() || "Other Deriv Markets";
+          const submarketName = String(
+            item.submarket_display_name || item.submarket || item.submarket_name || ""
+          ).trim();
 
           return {
-            label: `${displayName} (${baseAsset})`,
-            category: "Crypto · Binance USDT-M Futures",
-            symbol: exchangeSymbol,
-            provider: "binance",
-            baseAsset,
-            exchangeSymbol,
-            currentPrice: coin.currentPrice,
-            marketCapRank: coin.marketCapRank,
+            label: displayName,
+            category: submarketName ? `${marketName} · ${submarketName}` : marketName,
+            market: marketName,
+            submarket: submarketName,
+            symbol,
+            provider: "deriv",
           };
-        });
+        }).filter(Boolean).sort((a, b) =>
+          a.category.localeCompare(b.category) || a.label.localeCompare(b.label)
+        );
 
+        if (!markets.length) throw new Error("Deriv returned no usable active market symbols.");
         if (!cancelled) {
-          setCryptoMarkets(markets);
-          setCryptoStatus(`${markets.length} crypto markets available`);
+          setDerivMarkets(markets);
+          setMarketStatus(`${markets.length} active Deriv markets available`);
         }
       } catch (err) {
         if (!cancelled) {
-          setCryptoStatus(
-            `Crypto list unavailable: ${err?.message || "unknown error"}`
-          );
-          console.error("Binance market list unavailable:", err);
+          setMarketStatus(`Deriv markets unavailable: ${err?.message || "unknown error"}`);
+          setError(err?.message || "Could not load active Deriv markets.");
         }
+      } finally {
+        if (client?.close) client.close();
       }
     }
 
-    loadCryptoMarkets();
-
-    return () => {
-      cancelled = true;
-    };
+    loadDerivMarkets();
+    return () => { cancelled = true; };
   }, []);
 
-  const allMarkets = useMemo(
-    () => [...BASE_MARKETS, ...cryptoMarkets],
-    [cryptoMarkets]
-  );
-
+  const allMarkets = useMemo(() => derivMarkets, [derivMarkets]);
   const filteredMarkets = useMemo(() => {
     const query = search.trim().toLowerCase();
-    const source = query ? allMarkets : BASE_MARKETS;
-
-    return source.filter((item) =>
-      `${item.label} ${item.category} ${item.symbol} ${item.baseAsset || ""}`
+    return allMarkets.filter((item) =>
+      `${item.label} ${item.category} ${item.market} ${item.submarket} ${item.symbol}`
         .toLowerCase()
         .includes(query)
     );
@@ -1712,62 +1607,16 @@ export default function App() {
     try {
       let data;
 
-      if (isCrypto(market)) {
-        setConnection("Requesting Binance historical crypto candles…");
+      setConnection("Connecting to Deriv market data…");
+      client = await connectToDeriv();
+      data = await getCandles(client, market.symbol, timeframe, 300);
 
-        const params = new URLSearchParams({
-          provider: "binance",
-          symbol: String(
-            market.exchangeSymbol ||
-              `${String(market.baseAsset || "").toUpperCase()}USDT`
-          ).toUpperCase(),
-          timeframe:
-            TIMEFRAMES.find((tf) => tf.value === timeframe)?.apiValue || "5m",
-          limit: "300",
-        });
-
-        const response = await fetch(
-          `${API_BASE_URL}/api/candles?${params.toString()}`
-        );
-
-        const contentType = response.headers.get("content-type") || "";
-
-        if (!contentType.includes("application/json")) {
-          throw new Error(
-            "Backend returned non-JSON candle data. Confirm server.js is running and the backend URL is correct."
-          );
-        }
-
-        const result = await response.json();
-
-        if (!response.ok) {
-          throw new Error(
-            result.error ||
-              "Could not retrieve Binance crypto candles. This crypto may not have a Binance USDT-M perpetual futures contract."
-          );
-        }
-
-        if (!Array.isArray(result.candles)) {
-          throw new Error("Binance returned an invalid candle list.");
-        }
-
-        data = result.candles.map(normalizeCandle);
-        setConnection("Connected · Binance USDT-M Futures data");
-      } else {
-        setConnection("Connecting to Deriv market data…");
-
-        client = await connectToDeriv();
-        data = await getCandles(client, market.symbol, timeframe, 300);
-
-        if (!data?.length) {
-          throw new Error(
-            "Deriv returned no candles for this symbol. Confirm the symbol is supported by your Deriv API."
-          );
-        }
-
-        data = data.map(normalizeCandle);
-        setConnection("Data received · Deriv connection closed");
+      if (!data?.length) {
+        throw new Error("Deriv returned no candles for this symbol. Confirm the symbol is currently active on Deriv.");
       }
+
+      data = data.map(normalizeCandle);
+      setConnection("Data received · Deriv market data");
 
       if (!data.length) {
         throw new Error("The selected market returned no usable candles.");
@@ -1903,11 +1752,7 @@ export default function App() {
         runFreshAnalysis(marketStory, memoryInfo);
       }
 
-      setConnection(
-        isCrypto(market)
-          ? "Data received · Binance USDT-M Futures"
-          : "Data received · Deriv connection closed"
-      );
+      setConnection("Data received · Deriv market data");
     } catch (err) {
       setConnection("Connection unavailable");
       setError(err?.message || "Could not retrieve historical candle data.");
@@ -1925,16 +1770,14 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (resumeAttemptedRef.current || cryptoStatus === "Loading crypto markets…") return;
+    if (resumeAttemptedRef.current || marketStatus.startsWith("Loading") || marketStatus.startsWith("Connecting")) return;
     resumeAttemptedRef.current = true;
 
     const savedSession = readSavedSession();
     if (!savedSession?.symbol || !Number.isFinite(Number(savedSession.timeframe))) return;
 
     const restoredMarket = allMarkets.find((item) => {
-      const provider = isCrypto(item) ? "binance" : "deriv";
-      const symbol = String(item.exchangeSymbol || item.symbol || "").toUpperCase();
-      return provider === savedSession.provider && symbol === String(savedSession.symbol).toUpperCase();
+      return item.provider === "deriv" && item.symbol === savedSession.symbol;
     });
 
     if (!restoredMarket) return;
@@ -1944,7 +1787,7 @@ export default function App() {
     setSearch(restoredMarket.label);
     setTimeframe(Number(savedSession.timeframe));
     setSuggestionsOpen(false);
-  }, [allMarkets, cryptoStatus]);
+  }, [allMarkets, marketStatus]);
 
   useEffect(() => {
     if (!resumePendingRef.current || !market) return;
@@ -1956,9 +1799,7 @@ export default function App() {
     if (market) saveSession(market, timeframe);
   }, [market, timeframe]);
 
-  const providerDescription = isCrypto(market)
-    ? "Requesting Binance USDT-M Futures candles. No orders will be placed."
-    : "Connecting to Deriv and requesting historical candles. No orders will be placed.";
+  const providerDescription = "Connecting to Deriv and requesting historical candles. No orders will be placed.";
 
   return (
     <main className="nox-app">
@@ -1991,7 +1832,7 @@ export default function App() {
                 setError("");
               }}
               onFocus={() => setSuggestionsOpen(true)}
-              placeholder="Search synthetic indices, forex, metals or crypto…"
+              placeholder="Search all active Deriv markets…"
               aria-label="Search markets"
               autoComplete="off"
             />
@@ -2021,7 +1862,7 @@ export default function App() {
                 <button
                   type="button"
                   className="suggestion"
-                  key={`${item.provider}-${item.symbol}`}
+                  key={`${item.symbol}`}
                   onClick={() => chooseMarket(item)}
                 >
                   <span>
@@ -2034,7 +1875,7 @@ export default function App() {
 
               {!filteredMarkets.length && (
                 <div className="empty-suggestions">
-                  No matching markets. {cryptoStatus}
+                  No matching markets. {marketStatus}
                 </div>
               )}
             </div>
@@ -2083,7 +1924,7 @@ export default function App() {
           {connection}
         </p>
 
-        <p className="crypto-status">{cryptoStatus}</p>
+        <p className="market-status">{marketStatus}</p>
       </section>
 
       {loading && (
@@ -2230,8 +2071,8 @@ export default function App() {
                     ? "Wait for a candle close outside the range, then a retest that holds. A bullish candle after an upper retest supports a buy idea; a bearish candle after a lower retest supports a sell idea. Use the single major swing trend line in the direction of the confirmed trend as the entry reference; require the retest candle to close in that direction."
                     : analysis.trendContext.major === "BEARISH"
                       ? "Wait for a candle close outside the range, then a retest that holds. A bullish candle after an upper retest supports a buy idea; a bearish candle after a lower retest supports a sell idea. Use the single major swing trend line in the direction of the confirmed trend as the entry reference; require the retest candle to close in that direction."
-                      : "Wait until a clear major swing direction and a valid trend line are confirmed."
-                  : "No valid major swing trend line is confirmed yet. Wait for two meaningful confirmed swing points; do not draw or trade an assumed line."}
+                      : "Wait until a clear major swing direction is confirmed. A diagonal trendline is optional and must be independently validated."
+                  : "NO CONFIRMED TRENDLINE. Major market structure can still be bullish or bearish; wait for a valid diagonal line before using one as an entry reference."}
               </p>
             </div>
 
