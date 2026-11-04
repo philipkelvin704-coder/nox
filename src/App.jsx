@@ -1618,23 +1618,23 @@ export default function App() {
           );
         }
 
+        const isBybitBackup = data.provider === "bybit-linear";
         const markets = data.markets.map((coin) => {
+          const baseAsset = String(
+            coin.baseAsset || coin.symbol || coin.id || ""
+          ).toUpperCase();
           const exchangeSymbol = String(
-            coin.exchangeSymbol || coin.id || coin.symbol || ""
+            coin.exchangeSymbol || `${baseAsset}USDT`
           ).toUpperCase();
-          const rawBaseAsset = String(
-            coin.baseAsset || coin.symbol || exchangeSymbol
-          ).toUpperCase();
-          const baseAsset = rawBaseAsset.endsWith("USDT")
-            ? rawBaseAsset.slice(0, -4)
-            : rawBaseAsset;
           const displayName = coin.name || baseAsset;
 
           return {
             label: `${displayName} (${baseAsset})`,
-            category: "Crypto · Binance USDT-M Futures",
+            category: isBybitBackup
+              ? "Crypto · Bybit USDT perpetual Futures"
+              : "Crypto · Binance USDT-M Futures",
             symbol: exchangeSymbol,
-            provider: "binance",
+            provider: isBybitBackup ? "bybit" : "binance",
             baseAsset,
             exchangeSymbol,
             currentPrice: coin.currentPrice,
@@ -1644,7 +1644,11 @@ export default function App() {
 
         if (!cancelled) {
           setCryptoMarkets(markets);
-          setCryptoStatus(`${markets.length} crypto markets available`);
+          setCryptoStatus(
+            isBybitBackup
+              ? `${markets.length} crypto markets available · Bybit Futures backup`
+              : `${markets.length} Binance Futures markets available`
+          );
         }
       } catch (err) {
         if (!cancelled) {
@@ -1713,10 +1717,10 @@ export default function App() {
       let data;
 
       if (isCrypto(market)) {
-        setConnection("Requesting Binance historical crypto candles…");
+        setConnection(`Requesting ${market.provider === "bybit" ? "Bybit" : "Binance"} Futures historical crypto candles…`);
 
         const params = new URLSearchParams({
-          provider: "binance",
+          provider: market.provider === "bybit" ? "bybit" : "binance",
           symbol: String(
             market.exchangeSymbol ||
               `${String(market.baseAsset || "").toUpperCase()}USDT`
@@ -1743,7 +1747,7 @@ export default function App() {
         if (!response.ok) {
           throw new Error(
             result.error ||
-              "Could not retrieve Binance crypto candles. This crypto may not have a Binance USDT-M perpetual futures contract."
+              "Could not retrieve Futures candles from the selected exchange. This market may not have a matching perpetual contract."
           );
         }
 
@@ -1752,7 +1756,7 @@ export default function App() {
         }
 
         data = result.candles.map(normalizeCandle);
-        setConnection("Connected · Binance USDT-M Futures data");
+        setConnection(`Connected · ${market.provider === "bybit" ? "Bybit USDT perpetual Futures" : "Binance USDT-M Futures"} data`);
       } else {
         setConnection("Connecting to Deriv market data…");
 
