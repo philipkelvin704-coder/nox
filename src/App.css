@@ -1924,34 +1924,3 @@ input:focus-visible {
     font-size: 15px !important;
   }
 }
-
-
-/* Final alignment: raise the SWING BAR readout so its figure sits level with POINT.
-   Support/resistance copy controls follow the price, matching the requested order. */
-.major-swing-watch .swing-bar-stat {
-  transform: translateY(-7px) !important;
-}
-.trend-zone-item .copy-price.trend-zone-price {
-  flex-direction: row !important;
-  justify-content: flex-end !important;
-  gap: 7px !important;
-}
-.trend-zone-item .copy-price.trend-zone-price .copy-price-button {
-  order: 1 !important;
-  flex: 0 0 16px !important;
-  width: 16px !important;
-  height: 16px !important;
-  font-size: 13px !important;
-}
-.trend-zone-item .copy-price.trend-zone-price strong {
-  font-size: 16px !important;
-  line-height: 1.2 !important;
-}
-@media (max-width: 520px) {
-  .major-swing-watch .swing-bar-stat {
-    transform: translateY(-6px) !important;
-  }
-  .trend-zone-item .copy-price.trend-zone-price strong {
-    font-size: 15px !important;
-  }
-}
